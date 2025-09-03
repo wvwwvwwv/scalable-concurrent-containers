@@ -19,10 +19,10 @@ where
     map: HashMap<K, (), H>,
 }
 
-/// [`ConsumableEntry`] is a view into an occupied entry in a [`HashMap`] when iterating over
+/// [`ConsumableEntry`] is a view into an occupied entry in a [`HashSet`] when iterating over
 /// entries in it.
-pub struct ConsumableEntry<'g, K> {
-    consumable: hash_map::ConsumableEntry<'g, K, ()>,
+pub struct ConsumableEntry<'w, 'g: 'w, K> {
+    consumable: hash_map::ConsumableEntry<'w, 'g, K, ()>,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashSet`] higher than a certain level.
@@ -440,7 +440,10 @@ where
     /// assert_eq!(hashset.len(), 2);
     /// ```
     #[inline]
-    pub fn iter_mut_sync_with<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
+    pub fn iter_mut_sync_with<F: FnMut(ConsumableEntry<'_, '_, K>) -> bool>(
+        &self,
+        mut f: F,
+    ) -> bool {
         self.map
             .iter_mut_sync_with(|consumable| f(ConsumableEntry { consumable }))
     }
@@ -473,59 +476,13 @@ where
     /// };
     /// ```
     #[inline]
-    pub async fn iter_mut_async_with<F: FnMut(ConsumableEntry<'_, K>) -> bool>(
+    pub async fn iter_mut_async_with<F: FnMut(ConsumableEntry<'_, '_, K>) -> bool>(
         &self,
         mut f: F,
     ) -> bool {
         self.map
             .iter_mut_async_with(|consumable| f(ConsumableEntry { consumable }))
             .await
-    }
-
-    /// Scans all the keys.
-    ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
-    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
-    /// gets resized by another task.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<usize> = HashSet::default();
-    ///
-    /// let future_insert = hashset.insert_async(1);
-    /// let future_scan = hashset.scan_async(|k| println!("{k}"));
-    /// ```
-    #[inline]
-    pub async fn scan_async<F: FnMut(&K)>(&self, mut scanner: F) {
-        self.map.scan_async(|k, ()| scanner(k)).await;
-    }
-
-    /// Searches for any key that satisfies the given predicate.
-    ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
-    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
-    /// gets resized by another task.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// Returns `true` if a key satisfying the predicate is found.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// let future_insert = hashset.insert(1);
-    /// let future_any = hashset.any_async(|k| *k == 1);
-    /// ```
-    #[inline]
-    pub async fn any_async<P: FnMut(&K) -> bool>(&self, mut pred: P) -> bool {
-        self.map.any_async(|k, ()| pred(k)).await
     }
 
     /// Retains keys that satisfy the given predicate.
@@ -828,7 +785,7 @@ where
     }
 }
 
-impl<K> ConsumableEntry<'_, K> {
+impl<K> ConsumableEntry<'_, '_, K> {
     /// Consumes the entry by moving out the key and value.
     ///
     /// # Examples
@@ -861,7 +818,7 @@ impl<K> ConsumableEntry<'_, K> {
     }
 }
 
-impl<K> Deref for ConsumableEntry<'_, K> {
+impl<K> Deref for ConsumableEntry<'_, '_, K> {
     type Target = K;
 
     #[inline]

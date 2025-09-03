@@ -374,7 +374,7 @@ hashmap.retain(|_, v| { *v = 2; true });
 
 1.4.4
 
-* Major `Hash*` performance boost: vectorize `Hash*` bucket loopup operations.
+* Major `Hash*` performance boost: vectorize `Hash*` bucket lookup operations.
 
 1.4.3
 
@@ -534,7 +534,7 @@ hashmap.retain(|_, v| { *v = 2; true });
 
 0.11.0
 
-* Replace `ebr::Barrer::reclaim` with `ebr::Arc::release`.
+* Replace `ebr::Barrier::reclaim` with `ebr::Arc::release`.
 * Rename `ebr::Arc::drop_in_place` `ebr::Arc::release_drop_in_place`.
 * Implement `ebr::Barrier::defer`.
 * Make `ebr::Collectible` public.

@@ -873,6 +873,88 @@ where
         self.peek_with(key, |_, _| ()).is_some()
     }
 
+    /// Iterates over entries asynchronously for reading entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u64> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    ///
+    /// async {
+    ///     let result = hashindex.iter_async_with(|k, v| {
+    ///         false
+    ///     }).await;
+    ///     assert!(!result);
+    /// };
+    /// ```
+    #[inline]
+    pub async fn iter_async_with<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+        let mut result = true;
+        let sendable_guard = SendableGuard::default();
+        self.for_each_reader_async_with(&sendable_guard, |reader, data_block| {
+            let guard = sendable_guard.guard();
+            let mut entry_ptr = EntryPtr::new(guard);
+            while entry_ptr.move_to_next(&reader, guard) {
+                let (k, v) = entry_ptr.get(data_block);
+                if !f(k, v) {
+                    result = false;
+                    return false;
+                }
+            }
+            true
+        })
+        .await;
+        result
+    }
+
+    /// Iterates over entries synchronously for reading entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u64> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert(2, 1).is_ok());
+    ///
+    /// let mut acc = 0_u64;
+    /// let result = hashindex.iter_sync_with(|k, v| {
+    ///     acc += *k;
+    ///     acc += *v;
+    ///     true
+    /// });
+    ///
+    /// assert!(result);
+    /// assert_eq!(acc, 4);
+    /// ```
+    #[inline]
+    pub fn iter_sync_with<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+        let mut result = true;
+        let guard = Guard::new();
+        self.for_each_reader_sync_with(&guard, |reader, data_block| {
+            let mut entry_ptr = EntryPtr::new(&guard);
+            while entry_ptr.move_to_next(&reader, &guard) {
+                let (k, v) = entry_ptr.get(data_block);
+                if !f(k, v) {
+                    result = false;
+                    return false;
+                }
+            }
+            true
+        });
+        result
+    }
+
     /// Retains the entries specified by the predicate.
     ///
     /// Entries that have existed since the invocation of the method are guaranteed to be visited

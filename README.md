@@ -103,9 +103,9 @@ assert_eq!(acc, 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
 
-// `any` returns `true` when an entry satisfying the predicate is found.
+// `iter_sync_with` returns `true` when all the entries satisfy the predicate.
 assert!(hashmap.insert(3, 2).is_ok());
-assert!(hashmap.any(|k, _| *k == 3));
+assert!(!hashmap.iter_sync_with(|k, _| *k == 3));
 
 // Multiple entries can be removed through `retain`.
 hashmap.retain(|k, v| *k == 1 && *v == 2);
@@ -120,8 +120,8 @@ fn is_send<T: Send>(f: &T) -> bool {
     true
 }
 
-// Asynchronous iteration over entries using `scan_async`.
-let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
+// Asynchronous iteration over entries using `iter_async_with`.
+let future_scan = hashmap.iter_async_with(|k, v| { println!("{k} {v}"); true });
 assert!(is_send(&future_scan));
 
 // Asynchronous iteration over entries using the `Entry` API.

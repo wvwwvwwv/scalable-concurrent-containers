@@ -530,11 +530,7 @@ where
     {
         let mut start_index = 0;
         let mut prev_len = 0;
-        while let Some(current_array) = self
-            .bucket_array()
-            .load(Acquire, sendable_guard.guard())
-            .as_ref()
-        {
+        while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             // In case the method is repeating the routine, iterate over entries from the middle of
             // the array.
             start_index = if prev_len == 0 || prev_len == current_array.len() {
@@ -557,7 +553,7 @@ where
                 }
 
                 let bucket = current_array.bucket(index);
-                if let Some(reader) = Reader::lock_sync(bucket) {
+                if let Some(reader) = Reader::lock_async(bucket, sendable_guard).await {
                     let data_block = current_array.data_block(index);
                     if !f(reader, data_block) {
                         return;
@@ -662,9 +658,9 @@ where
                 let bucket = current_array.bucket(index);
                 if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
                     let data_block = current_array.data_block(index);
-                    let (found, removed) = f(writer, data_block, index, current_array_len);
+                    let (stop, removed) = f(writer, data_block, index, current_array_len);
                     try_shrink |= removed;
-                    if found {
+                    if stop {
                         // Stop iterating over buckets.
                         if try_shrink {
                             self.try_shrink_or_rebuild(current_array, 0, sendable_guard.guard());
@@ -723,9 +719,9 @@ where
                 let bucket = current_array.bucket(index);
                 if let Some(writer) = Writer::lock_sync(bucket) {
                     let data_block = current_array.data_block(index);
-                    let (found, removed) = f(writer, data_block, index, current_array_len);
+                    let (stop, removed) = f(writer, data_block, index, current_array_len);
                     try_shrink |= removed;
-                    if found {
+                    if stop {
                         // Stop iterating over buckets.
                         if try_shrink {
                             self.try_shrink_or_rebuild(current_array, 0, guard);

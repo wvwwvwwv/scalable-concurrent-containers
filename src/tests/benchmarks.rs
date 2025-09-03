@@ -72,10 +72,11 @@ mod sync_benchmarks {
         #[inline(always)]
         fn scan_test(&self) -> usize {
             let mut scanned = 0;
-            self.scan(|_, v| {
+            self.iter_sync_with(|_, v| {
                 if addr_of!(v) as usize != 0 {
                     scanned += 1;
                 }
+                true
             });
             scanned
         }

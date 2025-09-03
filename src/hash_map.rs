@@ -114,15 +114,15 @@ where
 
 /// [`ConsumableEntry`] is a view into an occupied entry in a [`HashMap`] when iterating over
 /// entries in it.
-pub struct ConsumableEntry<'g, K, V> {
+pub struct ConsumableEntry<'w, 'g: 'w, K, V> {
     /// Holds an exclusive lock on the entry bucket.
-    writer: &'g Writer<'g, K, V, (), SEQUENTIAL>,
+    writer: &'w Writer<'w, K, V, (), SEQUENTIAL>,
     /// Reference to the entry data.
-    data_block: &'g DataBlock<K, V, BUCKET_LEN>,
+    data_block: &'w DataBlock<K, V, BUCKET_LEN>,
     /// Pointer to the entry.
-    entry_ptr: EntryPtr<'g, K, V, SEQUENTIAL>,
+    entry_ptr: &'w mut EntryPtr<'g, K, V, SEQUENTIAL>,
     /// Probes removal.
-    remove_probe: &'g mut bool,
+    remove_probe: &'w mut bool,
     /// Associated [`Guard`].
     guard: &'g Guard,
 }
@@ -1024,141 +1024,6 @@ where
         self.read_async(key, |_, _| ()).await.is_some()
     }
 
-    /// Scans all the entries.
-    ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashMap`] gets resized by another thread.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<usize, usize> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 1).is_ok());
-    ///
-    /// let mut sum = 0;
-    /// hashmap.scan(|k, v| { sum += *k + *v; });
-    /// assert_eq!(sum, 4);
-    /// ```
-    #[inline]
-    pub fn scan<F: FnMut(&K, &V)>(&self, mut scanner: F) {
-        self.any(|k, v| {
-            scanner(k, v);
-            false
-        });
-    }
-
-    /// Scans all the entries.
-    ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashMap`] gets resized by another task.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<usize, usize> = HashMap::default();
-    ///
-    /// let future_insert = hashmap.insert_async(1, 0);
-    /// let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
-    /// ```
-    #[inline]
-    pub async fn scan_async<F: FnMut(&K, &V)>(&self, mut scanner: F) {
-        self.any_async(|k, v| {
-            scanner(k, v);
-            false
-        })
-        .await;
-    }
-
-    /// Searches for any entry that satisfies the given predicate.
-    ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashMap`] gets resized by another thread.
-    ///
-    /// Returns `true` as soon as an entry satisfying the predicate is found.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 1).is_ok());
-    /// assert!(hashmap.insert(3, 2).is_ok());
-    ///
-    /// assert!(hashmap.any(|k, v| *k == 1 && *v == 0));
-    /// assert!(!hashmap.any(|k, v| *k == 2 && *v == 0));
-    /// ```
-    #[inline]
-    pub fn any<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
-        let mut found = false;
-        let guard = Guard::new();
-        self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
-            let mut entry_ptr = EntryPtr::new(&guard);
-            while entry_ptr.move_to_next(&writer, &guard) {
-                let (k, v) = entry_ptr.get(data_block);
-                if pred(k, v) {
-                    // Found one entry satisfying the predicate.
-                    found = true;
-                    return (true, false);
-                }
-            }
-            (false, false)
-        });
-        found
-    }
-
-    /// Searches for any entry that satisfies the given predicate.
-    ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashMap`] gets resized by another task.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// Returns `true` as soon as an entry satisfying the predicate is found.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// let future_insert = hashmap.insert_async(1, 0);
-    /// let future_any = hashmap.any_async(|k, _| *k == 1);
-    /// ```
-    #[inline]
-    pub async fn any_async<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
-        let mut found = false;
-        let sendable_guard = SendableGuard::default();
-        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
-            let guard = sendable_guard.guard();
-            let mut entry_ptr = EntryPtr::new(guard);
-            while entry_ptr.move_to_next(&writer, guard) {
-                let (k, v) = entry_ptr.get(data_block);
-                if pred(k, v) {
-                    // Found one entry satisfying the predicate.
-                    found = true;
-                    return (true, false);
-                }
-            }
-            (false, false)
-        })
-        .await;
-        found
-    }
-
     /// Iterates over entries asynchronously for reading entries.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
@@ -1184,8 +1049,9 @@ where
         let mut result = true;
         let sendable_guard = SendableGuard::default();
         self.for_each_reader_async_with(&sendable_guard, |reader, data_block| {
-            let mut entry_ptr = EntryPtr::new(sendable_guard.guard());
-            while entry_ptr.move_to_next(&reader, sendable_guard.guard()) {
+            let guard = sendable_guard.guard();
+            let mut entry_ptr = EntryPtr::new(guard);
+            while entry_ptr.move_to_next(&reader, guard) {
                 let (k, v) = entry_ptr.get(data_block);
                 if !f(k, v) {
                     result = false;
@@ -1268,7 +1134,7 @@ where
     /// };
     /// ```
     #[inline]
-    pub async fn iter_mut_async_with<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(
+    pub async fn iter_mut_async_with<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(
         &self,
         mut f: F,
     ) -> bool {
@@ -1282,7 +1148,7 @@ where
                 let consumable_entry = ConsumableEntry {
                     writer: &writer,
                     data_block,
-                    entry_ptr: entry_ptr.clone(),
+                    entry_ptr: &mut entry_ptr,
                     remove_probe: &mut removed,
                     guard,
                 };
@@ -1325,7 +1191,7 @@ where
     /// assert_eq!(hashmap.len(), 2);
     /// ```
     #[inline]
-    pub fn iter_mut_sync_with<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(
+    pub fn iter_mut_sync_with<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(
         &self,
         mut f: F,
     ) -> bool {
@@ -1338,7 +1204,7 @@ where
                 let consumable_entry = ConsumableEntry {
                     writer: &writer,
                     data_block,
-                    entry_ptr: entry_ptr.clone(),
+                    entry_ptr: &mut entry_ptr,
                     remove_probe: &mut removed,
                     guard: &guard,
                 };
@@ -1379,18 +1245,12 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        let guard = Guard::new();
-        self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
-            let mut removed = false;
-            let mut entry_ptr = EntryPtr::new(&guard);
-            while entry_ptr.move_to_next(&writer, &guard) {
-                let (k, v) = entry_ptr.get_mut(data_block, &writer);
-                if !pred(k, v) {
-                    writer.remove(data_block, &mut entry_ptr, &guard);
-                    removed = true;
-                }
+        self.iter_mut_sync_with(|mut e| {
+            let (k, v) = &mut *e;
+            if !pred(k, v) {
+                drop(e.consume());
             }
-            (false, removed)
+            true
         });
     }
 
@@ -1416,95 +1276,12 @@ where
     /// ```
     #[inline]
     pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        let sendable_guard = SendableGuard::default();
-        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
-            let mut removed = false;
-            let guard = sendable_guard.guard();
-            let mut entry_ptr = EntryPtr::new(guard);
-            while entry_ptr.move_to_next(&writer, guard) {
-                let (k, v) = entry_ptr.get_mut(data_block, &writer);
-                if !pred(k, v) {
-                    writer.remove(data_block, &mut entry_ptr, guard);
-                    removed = true;
-                }
+        self.iter_mut_async_with(|mut e| {
+            let (k, v) = &mut *e;
+            if !pred(k, v) {
+                drop(e.consume());
             }
-            (false, removed)
-        })
-        .await;
-    }
-
-    /// Prunes the entries specified by the predicate.
-    ///
-    /// If the value is consumed by the predicate, in other words, if the predicate returns `None`,
-    /// the entry is removed, otherwise the entry is retained.
-    ///
-    /// Entries that have existed since the invocation of the method are guaranteed to be visited
-    /// if they are not removed, however the same entry can be visited more than once if the
-    /// [`HashMap`] gets resized by another thread.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, String> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, String::from("1")).is_ok());
-    /// assert!(hashmap.insert(2, String::from("2")).is_ok());
-    /// assert!(hashmap.insert(3, String::from("3")).is_ok());
-    ///
-    /// hashmap.prune(|k, v| if *k == 1 { Some(v) } else { None });
-    /// assert_eq!(hashmap.len(), 1);
-    /// ```
-    #[inline]
-    pub fn prune<F: FnMut(&K, V) -> Option<V>>(&self, mut pred: F) {
-        let guard = Guard::default();
-        self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
-            let mut removed = false;
-            let mut entry_ptr = EntryPtr::new(&guard);
-            while entry_ptr.move_to_next(&writer, &guard) {
-                if writer.keep_or_consume(data_block, &mut entry_ptr, &mut pred, &guard) {
-                    removed = true;
-                }
-            }
-            (false, removed)
-        });
-    }
-
-    /// Prunes the entries specified by the predicate.
-    ///
-    /// If the value is consumed by the predicate, in other words, if the predicate returns `None`,
-    /// the entry is removed, otherwise the entry is retained.
-    ///
-    /// Entries that have existed since the invocation of the method are guaranteed to be visited
-    /// if they are not removed, however the same entry can be visited more than once if the
-    /// [`HashMap`] gets resized by another thread.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// let future_insert = hashmap.insert_async(1, 0);
-    /// let future_prune = hashmap.prune_async(|k, v| if *k == 1 { Some(v) } else { None });
-    /// ```
-    #[inline]
-    pub async fn prune_async<F: FnMut(&K, V) -> Option<V>>(&self, mut pred: F) {
-        let sendable_guard = SendableGuard::default();
-        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
-            let mut removed = false;
-            let guard = sendable_guard.guard();
-            let mut entry_ptr = EntryPtr::new(guard);
-            while entry_ptr.move_to_next(&writer, guard) {
-                if writer.keep_or_consume(data_block, &mut entry_ptr, &mut pred, guard) {
-                    removed = true;
-                }
-            }
-            (false, removed)
+            true
         })
         .await;
     }
@@ -1702,8 +1479,9 @@ where
     #[inline]
     fn clone(&self) -> Self {
         let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
-        self.scan(|k, v| {
+        self.iter_sync_with(|k, v| {
             let _result = self_clone.insert(k.clone(), v.clone());
+            true
         });
         self_clone
     }
@@ -1724,8 +1502,9 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_map();
-        self.scan(|k, v| {
+        self.iter_sync_with(|k, v| {
             d.entry(k, v);
+            true
         });
         d.finish()
     }
@@ -1826,8 +1605,8 @@ where
     /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        if !self.any(|k, v| other.read(k, |_, ov| v == ov) != Some(true)) {
-            return !other.any(|k, v| self.read(k, |_, sv| v == sv) != Some(true));
+        if self.iter_sync_with(|k, v| other.read(k, |_, ov| v == ov) == Some(true)) {
+            return other.iter_sync_with(|k, v| self.read(k, |_, sv| v == sv) == Some(true));
         }
         false
     }
@@ -2467,7 +2246,7 @@ where
     }
 }
 
-impl<K, V> ConsumableEntry<'_, K, V> {
+impl<K, V> ConsumableEntry<'_, '_, K, V> {
     /// Consumes the entry by moving out the key and value.
     ///
     /// # Examples
@@ -2495,14 +2274,14 @@ impl<K, V> ConsumableEntry<'_, K, V> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn consume(mut self) -> (K, V) {
+    pub fn consume(self) -> (K, V) {
         *self.remove_probe |= true;
         self.writer
-            .remove(self.data_block, &mut self.entry_ptr, self.guard)
+            .remove(self.data_block, self.entry_ptr, self.guard)
     }
 }
 
-impl<K, V> Deref for ConsumableEntry<'_, K, V> {
+impl<K, V> Deref for ConsumableEntry<'_, '_, K, V> {
     type Target = (K, V);
 
     #[inline]
@@ -2511,7 +2290,7 @@ impl<K, V> Deref for ConsumableEntry<'_, K, V> {
     }
 }
 
-impl<K, V> DerefMut for ConsumableEntry<'_, K, V> {
+impl<K, V> DerefMut for ConsumableEntry<'_, '_, K, V> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.entry_ptr.get_mut(self.data_block, self.writer)

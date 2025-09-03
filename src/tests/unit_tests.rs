@@ -644,7 +644,6 @@ mod hashmap {
                         })
                         .await;
                     assert!(iterated >= workload_size);
-                    assert!(hashmap.any_async(|k, _| range.contains(k)).await);
 
                     let mut removed = 0;
                     hashmap
@@ -658,7 +657,7 @@ mod hashmap {
                         })
                         .await;
                     assert_eq!(removed, workload_size);
-                    assert!(!hashmap.any_async(|k, _| range.contains(k)).await);
+                    assert!(hashmap.iter_async_with(|k, _| !range.contains(k)).await);
                 }));
             }
 
@@ -701,7 +700,6 @@ mod hashmap {
                         true
                     });
                     assert!(iterated >= workload_size);
-                    assert!(hashmap.any(|k, _| range.contains(k)));
 
                     let mut removed = 0;
                     hashmap.retain(|k, _| {
@@ -713,7 +711,7 @@ mod hashmap {
                         }
                     });
                     assert_eq!(removed, workload_size);
-                    assert!(!hashmap.any(|k, _| range.contains(k)));
+                    assert!(hashmap.iter_sync_with(|k, _| !range.contains(k)));
                 }));
             }
 
@@ -833,21 +831,19 @@ mod hashmap {
                         let result = hashmap.insert_async(id, id).await;
                         assert!(result.is_ok());
                     }
-                    assert!(hashmap.any_async(|k, _| range.contains(k)).await);
                     let mut removed = 0;
                     hashmap
-                        .prune_async(|k, v| {
-                            if range.contains(k) {
-                                assert_eq!(*k, v);
+                        .iter_mut_async_with(|entry| {
+                            if range.contains(&entry.0) {
+                                let (k, v) = entry.consume();
+                                assert_eq!(k, v);
                                 removed += 1;
-                                None
-                            } else {
-                                Some(v)
                             }
+                            true
                         })
                         .await;
                     assert_eq!(removed, workload_size);
-                    assert!(!hashmap.any_async(|k, _| range.contains(k)).await);
+                    assert!(hashmap.iter_async_with(|k, _| !range.contains(k)).await);
                 }));
             }
 
@@ -878,19 +874,17 @@ mod hashmap {
                         let result = hashmap.insert(id, id);
                         assert!(result.is_ok());
                     }
-                    assert!(hashmap.any(|k, _| range.contains(k)));
                     let mut removed = 0;
-                    hashmap.prune(|k, v| {
-                        if range.contains(k) {
-                            assert_eq!(*k, v);
+                    hashmap.iter_mut_sync_with(|entry| {
+                        if range.contains(&entry.0) {
+                            let (k, v) = entry.consume();
+                            assert_eq!(k, v);
                             removed += 1;
-                            None
-                        } else {
-                            Some(v)
                         }
+                        true
                     });
                     assert_eq!(removed, workload_size);
-                    assert!(!hashmap.any(|k, _| range.contains(k)));
+                    assert!(hashmap.iter_sync_with(|k, _| !range.contains(k)));
                 }));
             }
 
@@ -2631,7 +2625,7 @@ mod treeindex {
                     barrier.wait().await;
                     if task_id == 0 {
                         for k in 1..=workload_size {
-                            assert!(tree.insert(k, k).is_ok());
+                            assert!(tree.insert_async(k, k).await.is_ok());
                             assert!(tree.peek(&k, &Guard::new()).is_some());
                             data.store(k, Release);
                         }
@@ -2645,11 +2639,13 @@ mod treeindex {
                                 continue;
                             }
                             if end_bound % 2 == 0 {
-                                for (k, _) in tree.range(..end_bound, &Guard::new()) {
-                                    tree.remove(k);
+                                let keys = tree
+                                    .range(..end_bound, &Guard::new())
+                                    .map(|(k, v)| (*k, *v))
+                                    .collect::<Vec<_>>();
+                                for (k, _) in keys {
+                                    tree.remove_async(&k).await;
                                 }
-                            } else if end_bound % 3 == 0 {
-                                tree.remove_range(..end_bound);
                             } else {
                                 tree.remove_range_async(..end_bound).await;
                             }

@@ -16,6 +16,7 @@ use super::hash_table::bucket::{CACHE, DoublyLinkedList, EntryPtr};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
 use crate::async_helper::SendableGuard;
+use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, Writer};
 
 /// Scalable concurrent 32-way associative cache backed by [`HashMap`](super::HashMap).
 ///
@@ -80,6 +81,21 @@ where
     key: K,
     hash: u64,
     locked_entry: LockedEntry<'h, K, V, DoublyLinkedList, CACHE>,
+}
+
+/// [`ConsumableEntry`] is a view into an occupied entry in a [`HashCache`] when iterating over
+/// entries in it.
+pub struct ConsumableEntry<'w, 'g: 'w, K, V> {
+    /// Holds an exclusive lock on the entry bucket.
+    writer: &'w Writer<'w, K, V, DoublyLinkedList, CACHE>,
+    /// Reference to the entry data.
+    data_block: &'w DataBlock<K, V, BUCKET_LEN>,
+    /// Pointer to the entry.
+    entry_ptr: &'w mut EntryPtr<'g, K, V, CACHE>,
+    /// Probes removal.
+    remove_probe: &'w mut bool,
+    /// Associated [`Guard`].
+    guard: &'g Guard,
 }
 
 impl<K, V, H> HashCache<K, V, H>
@@ -681,70 +697,148 @@ where
         .flatten()
     }
 
-    /// Scans all the entries.
+    /// Iterates over entries asynchronously for reading entries.
     ///
-    /// This method does not affect the LRU information in each bucket.
-    ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashCache`] gets resized by another thread.
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::HashCache;
     ///
-    /// let hashcache: HashCache<usize, usize> = HashCache::default();
+    /// let hashcache: HashCache<u64, u64> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    ///
+    /// async {
+    ///     let result = hashcache.iter_async_with(|k, v| {
+    ///         false
+    ///     }).await;
+    ///     assert!(!result);
+    /// };
+    /// ```
+    #[inline]
+    pub async fn iter_async_with<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+        let mut result = true;
+        let sendable_guard = SendableGuard::default();
+        self.for_each_reader_async_with(&sendable_guard, |reader, data_block| {
+            let guard = sendable_guard.guard();
+            let mut entry_ptr = EntryPtr::new(guard);
+            while entry_ptr.move_to_next(&reader, guard) {
+                let (k, v) = entry_ptr.get(data_block);
+                if !f(k, v) {
+                    result = false;
+                    return false;
+                }
+            }
+            true
+        })
+        .await;
+        result
+    }
+
+    /// Iterates over entries synchronously for reading entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u64> = HashCache::default();
     ///
     /// assert!(hashcache.put(1, 0).is_ok());
     /// assert!(hashcache.put(2, 1).is_ok());
     ///
-    /// let mut sum = 0;
-    /// hashcache.scan(|k, v| { sum += *k + *v; });
-    /// assert_eq!(sum, 4);
+    /// let mut acc = 0_u64;
+    /// let result = hashcache.iter_sync_with(|k, v| {
+    ///     acc += *k;
+    ///     acc += *v;
+    ///     true
+    /// });
+    ///
+    /// assert!(result);
+    /// assert_eq!(acc, 4);
     /// ```
     #[inline]
-    pub fn scan<F: FnMut(&K, &V)>(&self, mut scanner: F) {
-        self.any(|k, v| {
-            scanner(k, v);
-            false
+    pub fn iter_sync_with<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+        let mut result = true;
+        let guard = Guard::new();
+        self.for_each_reader_sync_with(&guard, |reader, data_block| {
+            let mut entry_ptr = EntryPtr::new(&guard);
+            while entry_ptr.move_to_next(&reader, &guard) {
+                let (k, v) = entry_ptr.get(data_block);
+                if !f(k, v) {
+                    result = false;
+                    return false;
+                }
+            }
+            true
         });
+        result
     }
 
-    /// Scans all the entries.
+    /// Iterates over entries asynchronously for updating entries.
     ///
-    /// This method does not affect the LRU information in each bucket.
-    ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashCache`] gets resized by another task.
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::HashCache;
     ///
-    /// let hashcache: HashCache<usize, usize> = HashCache::default();
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// let future_put = hashcache.put_async(1, 0);
-    /// let future_scan = hashcache.scan_async(|k, v| println!("{k} {v}"));
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put(2, 1).is_ok());
+    ///
+    /// async {
+    ///     let result = hashcache.iter_mut_async_with(|entry| {
+    ///         if entry.0 == 1 {
+    ///             entry.consume();
+    ///             return false;
+    ///         }
+    ///         true
+    ///     }).await;
+    ///
+    ///     assert!(!result);
+    ///     assert_eq!(hashcache.len(), 1);
+    /// };
     /// ```
     #[inline]
-    pub async fn scan_async<F: FnMut(&K, &V)>(&self, mut scanner: F) {
-        self.any_async(|k, v| {
-            scanner(k, v);
-            false
+    pub async fn iter_mut_async_with<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(
+        &self,
+        mut f: F,
+    ) -> bool {
+        let mut result = true;
+        let sendable_guard = SendableGuard::default();
+        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
+            let mut removed = false;
+            let guard = sendable_guard.guard();
+            let mut entry_ptr = EntryPtr::new(guard);
+            while entry_ptr.move_to_next(&writer, guard) {
+                let consumable_entry = ConsumableEntry {
+                    writer: &writer,
+                    data_block,
+                    entry_ptr: &mut entry_ptr,
+                    remove_probe: &mut removed,
+                    guard,
+                };
+                if !f(consumable_entry) {
+                    result = false;
+                    return (true, removed);
+                }
+            }
+            (false, removed)
         })
         .await;
+        result
     }
 
-    /// Searches for any entry that satisfies the given predicate.
+    /// Iterates over entries synchronously for updating entries.
     ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashCache`] gets resized by another thread.
-    ///
-    /// Returns `true` as soon as an entry satisfying the predicate is found.
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
     /// # Examples
     ///
@@ -757,67 +851,44 @@ where
     /// assert!(hashcache.put(2, 1).is_ok());
     /// assert!(hashcache.put(3, 2).is_ok());
     ///
-    /// assert!(hashcache.any(|k, v| *k == 1 && *v == 0));
-    /// assert!(!hashcache.any(|k, v| *k == 2 && *v == 0));
+    /// let result = hashcache.iter_mut_sync_with(|entry| {
+    ///     if entry.0 == 1 {
+    ///         entry.consume();
+    ///         return false;
+    ///     }
+    ///     true
+    /// });
+    ///
+    /// assert!(!result);
+    /// assert!(!hashcache.contains(&1));
+    /// assert_eq!(hashcache.len(), 2);
     /// ```
     #[inline]
-    pub fn any<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
-        let mut found = false;
+    pub fn iter_mut_sync_with<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(
+        &self,
+        mut f: F,
+    ) -> bool {
+        let mut result = true;
         let guard = Guard::new();
         self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
+            let mut removed = false;
             let mut entry_ptr = EntryPtr::new(&guard);
             while entry_ptr.move_to_next(&writer, &guard) {
-                let (k, v) = entry_ptr.get(data_block);
-                if pred(k, v) {
-                    // Found one entry satisfying the predicate.
-                    found = true;
-                    return (true, false);
+                let consumable_entry = ConsumableEntry {
+                    writer: &writer,
+                    data_block,
+                    entry_ptr: &mut entry_ptr,
+                    remove_probe: &mut removed,
+                    guard: &guard,
+                };
+                if !f(consumable_entry) {
+                    result = false;
+                    return (true, removed);
                 }
             }
-            (false, false)
+            (false, removed)
         });
-        found
-    }
-
-    /// Searches for any entry that satisfies the given predicate.
-    ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashCache`] gets resized by another task.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// Returns `true` as soon as an entry satisfying the predicate is found.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    ///
-    /// let future_put = hashcache.put_async(1, 0);
-    /// let future_any = hashcache.any_async(|k, _| *k == 1);
-    /// ```
-    #[inline]
-    pub async fn any_async<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
-        let mut found = false;
-        let sendable_guard = SendableGuard::default();
-        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
-            let guard = sendable_guard.guard();
-            let mut entry_ptr = EntryPtr::new(guard);
-            while entry_ptr.move_to_next(&writer, guard) {
-                let (k, v) = entry_ptr.get(data_block);
-                if pred(k, v) {
-                    // Found one entry satisfying the predicate.
-                    found = true;
-                    return (true, false);
-                }
-            }
-            (false, false)
-        })
-        .await;
-        found
+        result
     }
 
     /// Retains the entries specified by the predicate.
@@ -847,18 +918,12 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        let guard = Guard::new();
-        self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
-            let mut removed = false;
-            let mut entry_ptr = EntryPtr::new(&guard);
-            while entry_ptr.move_to_next(&writer, &guard) {
-                let (k, v) = entry_ptr.get_mut(data_block, &writer);
-                if !pred(k, v) {
-                    writer.remove(data_block, &mut entry_ptr, &guard);
-                    removed = true;
-                }
+        self.iter_mut_sync_with(|mut e| {
+            let (k, v) = &mut *e;
+            if !pred(k, v) {
+                drop(e.consume());
             }
-            (false, removed)
+            true
         });
     }
 
@@ -884,19 +949,12 @@ where
     /// ```
     #[inline]
     pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        let sendable_guard = SendableGuard::default();
-        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
-            let mut removed = false;
-            let guard = sendable_guard.guard();
-            let mut entry_ptr = EntryPtr::new(guard);
-            while entry_ptr.move_to_next(&writer, guard) {
-                let (k, v) = entry_ptr.get_mut(data_block, &writer);
-                if !pred(k, v) {
-                    writer.remove(data_block, &mut entry_ptr, guard);
-                    removed = true;
-                }
+        self.iter_mut_async_with(|mut e| {
+            let (k, v) = &mut *e;
+            if !pred(k, v) {
+                drop(e.consume());
             }
-            (false, removed)
+            true
         })
         .await;
     }
@@ -1103,8 +1161,9 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_map();
-        self.scan(|k, v| {
+        self.iter_sync_with(|k, v| {
             d.entry(k, v);
+            true
         });
         d.finish()
     }
@@ -1185,8 +1244,8 @@ where
     /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        if !self.any(|k, v| other.read(k, |_, ov| v == ov) != Some(true)) {
-            return !other.any(|k, v| self.read(k, |_, sv| v == sv) != Some(true));
+        if self.iter_sync_with(|k, v| other.read(k, |_, ov| v == ov) == Some(true)) {
+            return other.iter_sync_with(|k, v| self.read(k, |_, sv| v == sv) == Some(true));
         }
         false
     }
@@ -1674,5 +1733,56 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("VacantEntry").field(self.key()).finish()
+    }
+}
+
+impl<K, V> ConsumableEntry<'_, '_, K, V> {
+    /// Consumes the entry by moving out the key and value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put(2, 1).is_ok());
+    /// assert!(hashcache.put(3, 2).is_ok());
+    ///
+    /// let mut consumed = None;
+    ///
+    /// hashcache.iter_mut_sync_with(|entry| {
+    ///     if entry.0 == 1 {
+    ///         consumed.replace(entry.consume().1);
+    ///     }
+    ///     true
+    /// });
+    ///
+    /// assert!(!hashcache.contains(&1));
+    /// assert_eq!(consumed, Some(0));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn consume(self) -> (K, V) {
+        *self.remove_probe |= true;
+        self.writer
+            .remove(self.data_block, self.entry_ptr, self.guard)
+    }
+}
+
+impl<K, V> Deref for ConsumableEntry<'_, '_, K, V> {
+    type Target = (K, V);
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.entry_ptr.get(self.data_block)
+    }
+}
+
+impl<K, V> DerefMut for ConsumableEntry<'_, '_, K, V> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.entry_ptr.get_mut(self.data_block, self.writer)
     }
 }
