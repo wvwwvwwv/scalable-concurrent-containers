@@ -586,7 +586,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.remove_if(key, |_| true)
+        self.remove_if_sync(key, |_| true)
     }
 
     /// Removes a key-value pair if the key exists.
@@ -612,44 +612,6 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.remove_if_async(key, |_| true).await
-    }
-
-    /// Removes a key-value pair if the key exists and the given condition is met.
-    ///
-    /// Returns `false` if the key does not exist or the condition was not met.
-    ///
-    /// Returns `true` if the key existed and the condition was met after marking the entry
-    /// unreachable; the memory will be reclaimed later.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(!hashindex.remove_if(&1, |v| *v == 1));
-    /// assert!(hashindex.remove_if(&1, |v| *v == 0));
-    /// ```
-    #[inline]
-    pub fn remove_if<Q, F: FnOnce(&V) -> bool>(&self, key: &Q, condition: F) -> bool
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        let hash = self.hash(key);
-        let guard = Guard::default();
-        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
-            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
-            if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
-                writer.mark_removed(&mut entry_ptr, &guard);
-                (true, writer.need_rebuild())
-            } else {
-                (false, false)
-            }
-        })
-        .ok()
-        .is_some_and(|removed| removed)
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -690,12 +652,12 @@ where
         .is_some_and(|removed| removed)
     }
 
-    /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
+    /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
-    /// use [`peek`](Self::peek) if read-only access is sufficient.
+    /// Returns `false` if the key does not exist or the condition was not met.
     ///
-    /// Returns `None` if the key does not exist.
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -704,36 +666,28 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.get(&1).is_none());
-    /// assert!(hashindex.insert(1, 10).is_ok());
-    /// assert_eq!(*hashindex.get(&1).unwrap().get(), 10);
-    /// assert_eq!(*hashindex.get(&1).unwrap(), 10);
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(!hashindex.remove_if_sync(&1, |v| *v == 1));
+    /// assert!(hashindex.remove_if_sync(&1, |v| *v == 0));
     /// ```
     #[inline]
-    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<'_, K, V, H>>
+    pub fn remove_if_sync<Q, F: FnOnce(&V) -> bool>(&self, key: &Q, condition: F) -> bool
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
         let guard = Guard::default();
-        self.optional_writer_sync(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
-            if entry_ptr.is_valid() {
-                let locked_entry =
-                    LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
-                        .prolong_lifetime(self);
-                return (
-                    Some(OccupiedEntry {
-                        hashindex: self,
-                        locked_entry,
-                    }),
-                    false,
-                );
+        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
+            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
+            if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
+                writer.mark_removed(&mut entry_ptr, &guard);
+                (true, writer.need_rebuild())
+            } else {
+                (false, false)
             }
-            (None, false)
         })
         .ok()
-        .flatten()
+        .is_some_and(|removed| removed)
     }
 
     /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
@@ -778,6 +732,52 @@ where
             (None, false)
         })
         .await
+        .ok()
+        .flatten()
+    }
+
+    /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
+    ///
+    /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
+    /// use [`peek`](Self::peek) if read-only access is sufficient.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.get_sync(&1).is_none());
+    /// assert!(hashindex.insert(1, 10).is_ok());
+    /// assert_eq!(*hashindex.get_sync(&1).unwrap().get(), 10);
+    /// assert_eq!(*hashindex.get_sync(&1).unwrap(), 10);
+    /// ```
+    #[inline]
+    pub fn get_sync<Q>(&self, key: &Q) -> Option<OccupiedEntry<'_, K, V, H>>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        let hash = self.hash(key);
+        let guard = Guard::default();
+        self.optional_writer_sync(hash, &guard, |writer, data_block, index, len| {
+            let entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
+            if entry_ptr.is_valid() {
+                let locked_entry =
+                    LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
+                        .prolong_lifetime(self);
+                return (
+                    Some(OccupiedEntry {
+                        hashindex: self,
+                        locked_entry,
+                    }),
+                    false,
+                );
+            }
+            (None, false)
+        })
         .ok()
         .flatten()
     }
@@ -1027,24 +1027,6 @@ where
 
     /// Clears the [`HashIndex`] by removing all key-value pairs.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// hashindex.clear();
-    ///
-    /// assert!(!hashindex.contains(&1));
-    /// ```
-    pub fn clear(&self) {
-        self.retain_sync(|_, _| false);
-    }
-
-    /// Clears the [`HashIndex`] by removing all key-value pairs.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -1059,6 +1041,24 @@ where
     /// ```
     pub async fn clear_async(&self) {
         self.retain_async(|_, _| false).await;
+    }
+
+    /// Clears the [`HashIndex`] by removing all key-value pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// hashindex.clear_sync();
+    ///
+    /// assert!(!hashindex.contains(&1));
+    /// ```
+    pub fn clear_sync(&self) {
+        self.retain_sync(|_, _| false);
     }
 
     /// Returns the number of entries in the [`HashIndex`].

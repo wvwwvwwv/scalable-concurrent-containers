@@ -198,12 +198,12 @@ use scc::HashIndex;
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
 assert!(hashindex.insert(1, 1).is_ok());
 
-if let Some(mut o) = hashindex.get(&1) {
+if let Some(mut o) = hashindex.get_sync(&1) {
     // Create a new version of the entry.
     o.update(2);
 };
 
-if let Some(mut o) = hashindex.get(&1) {
+if let Some(mut o) = hashindex.get_sync(&1) {
     // Update the entry in place.
     unsafe { *o.get_mut() = 3; }
 };
@@ -219,7 +219,7 @@ let hashindex: HashIndex<u64, u32> = HashIndex::default();
 assert!(hashindex.insert(1, 0).is_ok());
 
 // Existing values can be replaced with a new one.
-hashindex.get(&1).unwrap().update(1);
+hashindex.get_sync(&1).unwrap().update(1);
 
 let guard = Guard::new();
 
@@ -257,7 +257,7 @@ assert!(hashcache.put(1, 0).is_ok());
 assert!(hashcache.put(2, 0).is_ok());
 
 /// `1` becomes the most recently accessed entry in the bucket.
-assert!(hashcache.get(&1).is_some());
+assert!(hashcache.get_sync(&1).is_some());
 
 /// An entry can be normally removed.
 assert_eq!(hashcache.remove(&2).unwrap(), (2, 0));

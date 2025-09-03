@@ -13,7 +13,7 @@ fn get(c: &mut Criterion) {
             }
             let start = Instant::now();
             for i in 0..iters {
-                drop(hashcache.get(&i));
+                drop(hashcache.get_sync(&i));
             }
             start.elapsed()
         })

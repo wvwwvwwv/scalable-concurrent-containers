@@ -16,11 +16,11 @@ fn single_threaded() {
     }
     for i in 1..workload_size {
         if i % 2 == 0 {
-            assert!(hashmap.get(&i).is_none());
-            assert!(hashmap.get(&-i).is_some());
+            assert!(hashmap.get_sync(&i).is_none());
+            assert!(hashmap.get_sync(&-i).is_some());
         } else {
-            assert!(hashmap.get(&i).is_some());
-            assert!(hashmap.get(&-i).is_none());
+            assert!(hashmap.get_sync(&i).is_some());
+            assert!(hashmap.get_sync(&-i).is_none());
         }
     }
     for i in 1..workload_size {
@@ -47,9 +47,9 @@ fn multi_threaded() {
             for i in 1..workload_size {
                 assert!(hashmap.insert(i, i).is_ok());
             }
-            assert!(hashmap.get(&0).is_none());
+            assert!(hashmap.get_sync(&0).is_none());
             for i in 1..workload_size {
-                assert!(hashmap.get(&i).is_some());
+                assert!(hashmap.get_sync(&i).is_some());
             }
             for i in 1..workload_size {
                 assert!(hashmap.remove(&i).is_some());
@@ -59,9 +59,9 @@ fn multi_threaded() {
             for i in 1..workload_size {
                 assert!(hashmap.insert(-i, i).is_ok());
             }
-            assert!(hashmap.get(&0).is_none());
+            assert!(hashmap.get_sync(&0).is_none());
             for i in 1..workload_size {
-                assert!(hashmap.get(&-i).is_some());
+                assert!(hashmap.get_sync(&-i).is_some());
             }
             for i in 1..workload_size {
                 assert!(hashmap.remove(&-i).is_some());

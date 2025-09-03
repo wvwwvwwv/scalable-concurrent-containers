@@ -226,29 +226,6 @@ where
 
     /// Removes a key if the key exists and the given condition is met.
     ///
-    /// Returns `None` if the key does not exist or the condition was not met.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.remove_if(&1, || false).is_none());
-    /// assert_eq!(hashset.remove_if(&1, || true).unwrap(), 1);
-    /// ```
-    #[inline]
-    pub fn remove_if<Q, F: FnOnce() -> bool>(&self, key: &Q, condition: F) -> Option<K>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        self.map.remove_if(key, |()| condition()).map(|(k, ())| k)
-    }
-
-    /// Removes a key if the key exists and the given condition is met.
-    ///
     /// Returns `None` if the key does not exist or the condition was not met. It is an
     /// asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -269,6 +246,31 @@ where
         self.map
             .remove_if_async(key, |()| condition())
             .await
+            .map(|(k, ())| k)
+    }
+
+    /// Removes a key if the key exists and the given condition is met.
+    ///
+    /// Returns `None` if the key does not exist or the condition was not met.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.remove_if_sync(&1, || false).is_none());
+    /// assert_eq!(hashset.remove_if_sync(&1, || true).unwrap(), 1);
+    /// ```
+    #[inline]
+    pub fn remove_if_sync<Q, F: FnOnce() -> bool>(&self, key: &Q, condition: F) -> Option<K>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        self.map
+            .remove_if_sync(key, |()| condition())
             .map(|(k, ())| k)
     }
 
@@ -542,25 +544,6 @@ where
 
     /// Clears the [`HashSet`] by removing all keys.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// hashset.clear();
-    ///
-    /// assert!(!hashset.contains_sync(&1));
-    /// ```
-    #[inline]
-    pub fn clear(&self) {
-        self.map.clear();
-    }
-
-    /// Clears the [`HashSet`] by removing all keys.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -576,6 +559,25 @@ where
     #[inline]
     pub async fn clear_async(&self) {
         self.map.clear_async().await;
+    }
+
+    /// Clears the [`HashSet`] by removing all keys.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.insert(1).is_ok());
+    /// hashset.clear_sync();
+    ///
+    /// assert!(!hashset.contains_sync(&1));
+    /// ```
+    #[inline]
+    pub fn clear_sync(&self) {
+        self.map.clear_sync();
     }
 
     /// Returns the number of entries in the [`HashSet`].

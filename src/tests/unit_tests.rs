@@ -172,7 +172,7 @@ mod hashmap {
             }
             assert_eq!(INST_CNT.load(Relaxed), workload_size);
             assert_eq!(hashmap.len(), workload_size);
-            hashmap.clear();
+            hashmap.clear_sync();
             assert_eq!(INST_CNT.load(Relaxed), 0);
         }
     }
@@ -215,7 +215,7 @@ mod hashmap {
             .map(|k| (k / 2, R::new(&INST_CNT)))
             .collect::<HashMap<usize, R>>();
         assert_eq!(hashmap.len(), workload_size / 2);
-        hashmap.clear();
+        hashmap.clear_sync();
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
@@ -229,11 +229,11 @@ mod hashmap {
             assert!(hashmap.insert(k, R::new(&INST_CNT)).is_ok());
         }
         let hashmap_clone = hashmap.clone();
-        hashmap.clear();
+        hashmap.clear_sync();
         for k in 0..workload_size {
             assert!(hashmap_clone.read_sync(&k, |_, _| ()).is_some());
         }
-        hashmap_clone.clear();
+        hashmap_clone.clear_sync();
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
@@ -967,7 +967,7 @@ mod hashmap {
                     .or_insert(Data::new(d + 1, checker.clone()))
                     .get_mut() = Data::new(d + 2, checker.clone());
             }
-            hashmap.clear();
+            hashmap.clear_sync();
             assert_eq!(checker.load(Relaxed), 0);
 
             for d in key..(key + range) {
@@ -1115,7 +1115,7 @@ mod hashindex {
             }
             assert!(INST_CNT.load(Relaxed) >= workload_size);
             assert_eq!(hashindex.len(), workload_size);
-            hashindex.clear();
+            hashindex.clear_sync();
         }
         drop(hashindex);
 
@@ -1644,7 +1644,7 @@ mod hashindex {
                     for id in range.clone() {
                         let result = hashindex.insert(id, id);
                         assert!(result.is_ok());
-                        let entry = hashindex.get(&id).unwrap();
+                        let entry = hashindex.get_sync(&id).unwrap();
                         assert_eq!(*entry.get(), id);
                     }
                     for id in range.clone() {
@@ -1652,7 +1652,7 @@ mod hashindex {
                             // See notes about `Miri` in `peek*`.
                             hashindex.peek_with(&id, |k, v| assert_eq!(k, v));
                         }
-                        let entry = hashindex.get(&id).unwrap();
+                        let entry = hashindex.get_sync(&id).unwrap();
                         assert_eq!(*entry.get(), id);
                         entry.update(usize::MAX);
                     }
@@ -1661,7 +1661,7 @@ mod hashindex {
                             // See notes about `Miri` in `peek*`.
                             hashindex.peek_with(&id, |_, v| assert_eq!(*v, usize::MAX));
                         }
-                        let entry = hashindex.get(&id).unwrap();
+                        let entry = hashindex.get_sync(&id).unwrap();
                         assert_eq!(*entry.get(), usize::MAX);
                         entry.remove_entry();
                     }
@@ -1916,7 +1916,7 @@ mod hashcache {
             }
         }
 
-        hashcache.clear();
+        hashcache.clear_sync();
         for k in 0..=capacity {
             if let Ok(Some(_)) = hashcache.put(k, R::new(&INST_CNT)) {
                 assert_eq!(max_key, k);
@@ -1948,7 +1948,7 @@ mod hashcache {
             if i % 2 == 0 {
                 hashcache.clear_async().await;
             } else {
-                hashcache.clear();
+                hashcache.clear_sync();
             }
             for k in 0..=capacity {
                 if let Ok(Some(_)) = hashcache.put_async(k, R::new(&INST_CNT)).await {
@@ -1976,7 +1976,7 @@ mod hashcache {
 
         hashcache.retain_sync(|k, _| *k <= retain_limit);
         for k in 0..workload_size {
-            if hashcache.get(&k).is_some() {
+            if hashcache.get_sync(&k).is_some() {
                 assert!(k <= retain_limit);
             }
         }
@@ -1988,7 +1988,7 @@ mod hashcache {
 
         hashcache.retain_sync(|k, _| *k > retain_limit);
         for k in 0..workload_size {
-            if hashcache.get(&k).is_some() {
+            if hashcache.get_sync(&k).is_some() {
                 assert!(k > retain_limit);
             }
         }
@@ -2018,7 +2018,7 @@ mod hashcache {
                     assert!(k % 2 == 0);
                 }
             }
-            hashcache.clear();
+            hashcache.clear_sync();
         }
 
         drop(hashcache);
@@ -3728,11 +3728,11 @@ mod malfunction {
                         .put(k as usize, R::new(&INST_CNT, &NEVER_PANIC))
                         .is_ok()
                 );
-                if let Some(mut o) = hashcache.get(&(k as usize)) {
+                if let Some(mut o) = hashcache.get_sync(&(k as usize)) {
                     o.get_mut().2 = true;
                 }
             });
-            assert_eq!(hashcache.get(&(k as usize)).is_some(), result.is_ok());
+            assert_eq!(hashcache.get_sync(&(k as usize)).is_some(), result.is_ok());
         }
         drop(hashcache);
 

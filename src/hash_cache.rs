@@ -247,9 +247,9 @@ where
     ///     hashcache.entry_sync(ch).and_modify(|counter| *counter += 1).or_put(1);
     /// }
     ///
-    /// assert_eq!(*hashcache.get(&'s').unwrap().get(), 2);
-    /// assert_eq!(*hashcache.get(&'t').unwrap().get(), 3);
-    /// assert!(hashcache.get(&'y').is_none());
+    /// assert_eq!(*hashcache.get_sync(&'s').unwrap().get(), 2);
+    /// assert_eq!(*hashcache.get_sync(&'t').unwrap().get(), 3);
+    /// assert!(hashcache.get_sync(&'y').is_none());
     /// ```
     #[inline]
     pub fn entry_sync(&self, key: K) -> Entry<'_, K, V, H> {
@@ -389,55 +389,6 @@ where
     /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
     ///
     /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
-    /// use [`read`](Self::read) if read-only access is sufficient.
-    ///
-    /// Returns `None` if the key does not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    ///
-    /// assert!(hashcache.get(&1).is_none());
-    /// assert!(hashcache.put(1, 10).is_ok());
-    /// assert_eq!(*hashcache.get(&1).unwrap().get(), 10);
-    ///
-    /// *hashcache.get(&1).unwrap() = 11;
-    /// assert_eq!(*hashcache.get(&1).unwrap(), 11);
-    /// ```
-    #[inline]
-    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<'_, K, V, H>>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        let hash = self.hash(key);
-        let guard = Guard::default();
-        self.optional_writer_sync(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
-            if entry_ptr.is_valid() {
-                let locked_entry =
-                    LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
-                        .prolong_lifetime(self);
-                locked_entry.writer.update_lru_tail(&locked_entry.entry_ptr);
-                return (
-                    Some(OccupiedEntry {
-                        hashcache: self,
-                        locked_entry,
-                    }),
-                    false,
-                );
-            }
-            (None, false)
-        })
-        .ok()
-        .flatten()
-    }
-
-    /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
-    ///
-    /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
     /// use [`read_async`](Self::read_async) if read-only access is sufficient.
     ///
     /// Returns `None` if the key does not exist. It is an asynchronous method returning an
@@ -478,6 +429,55 @@ where
             (None, false)
         })
         .await
+        .ok()
+        .flatten()
+    }
+
+    /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
+    ///
+    /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
+    /// use [`read_sync`](Self::read_sync) if read-only access is sufficient.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.get_sync(&1).is_none());
+    /// assert!(hashcache.put(1, 10).is_ok());
+    /// assert_eq!(*hashcache.get_sync(&1).unwrap().get(), 10);
+    ///
+    /// *hashcache.get_sync(&1).unwrap() = 11;
+    /// assert_eq!(*hashcache.get_sync(&1).unwrap(), 11);
+    /// ```
+    #[inline]
+    pub fn get_sync<Q>(&self, key: &Q) -> Option<OccupiedEntry<'_, K, V, H>>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        let hash = self.hash(key);
+        let guard = Guard::default();
+        self.optional_writer_sync(hash, &guard, |writer, data_block, index, len| {
+            let entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
+            if entry_ptr.is_valid() {
+                let locked_entry =
+                    LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
+                        .prolong_lifetime(self);
+                locked_entry.writer.update_lru_tail(&locked_entry.entry_ptr);
+                return (
+                    Some(OccupiedEntry {
+                        hashcache: self,
+                        locked_entry,
+                    }),
+                    false,
+                );
+            }
+            (None, false)
+        })
         .ok()
         .flatten()
     }
@@ -593,7 +593,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.remove_if(key, |_| true)
+        self.remove_if_sync(key, |_| true)
     }
 
     /// Removes a key-value pair if the key exists.
@@ -616,43 +616,6 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.remove_if_async(key, |_| true).await
-    }
-
-    /// Removes a key-value pair if the key exists and the given condition is met.
-    ///
-    /// Returns `None` if the key does not exist or the condition was not met.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    ///
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// assert!(hashcache.remove_if(&1, |v| { *v += 1; false }).is_none());
-    /// assert_eq!(hashcache.remove_if(&1, |v| *v == 1).unwrap(), (1, 1));
-    /// ```
-    #[inline]
-    pub fn remove_if<Q, F: FnOnce(&mut V) -> bool>(&self, key: &Q, condition: F) -> Option<(K, V)>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        let hash = self.hash(key);
-        let guard = Guard::default();
-        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
-            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
-            if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
-                (
-                    Some(writer.remove(data_block, &mut entry_ptr, &guard)),
-                    writer.len() <= 1,
-                )
-            } else {
-                (None, false)
-            }
-        })
-        .ok()
-        .flatten()
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -692,6 +655,47 @@ where
             }
         })
         .await
+        .ok()
+        .flatten()
+    }
+
+    /// Removes a key-value pair if the key exists and the given condition is met.
+    ///
+    /// Returns `None` if the key does not exist or the condition was not met.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.remove_if_sync(&1, |v| { *v += 1; false }).is_none());
+    /// assert_eq!(hashcache.remove_if_sync(&1, |v| *v == 1).unwrap(), (1, 1));
+    /// ```
+    #[inline]
+    pub fn remove_if_sync<Q, F: FnOnce(&mut V) -> bool>(
+        &self,
+        key: &Q,
+        condition: F,
+    ) -> Option<(K, V)>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        let hash = self.hash(key);
+        let guard = Guard::default();
+        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
+            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
+            if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
+                (
+                    Some(writer.remove(data_block, &mut entry_ptr, &guard)),
+                    writer.len() <= 1,
+                )
+            } else {
+                (None, false)
+            }
+        })
         .ok()
         .flatten()
     }
@@ -957,25 +961,6 @@ where
 
     /// Clears the [`HashCache`] by removing all key-value pairs.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    ///
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// hashcache.clear();
-    ///
-    /// assert!(!hashcache.contains_sync(&1));
-    /// ```
-    #[inline]
-    pub fn clear(&self) {
-        self.retain_sync(|_, _| false);
-    }
-
-    /// Clears the [`HashCache`] by removing all key-value pairs.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -991,6 +976,25 @@ where
     #[inline]
     pub async fn clear_async(&self) {
         self.retain_async(|_, _| false).await;
+    }
+
+    /// Clears the [`HashCache`] by removing all key-value pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// hashcache.clear_sync();
+    ///
+    /// assert!(!hashcache.contains_sync(&1));
+    /// ```
+    #[inline]
+    pub fn clear_sync(&self) {
+        self.retain_sync(|_, _| false);
     }
 
     /// Returns the number of entries in the [`HashCache`].
@@ -1262,7 +1266,7 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// hashcache.entry_sync(3).or_put(7);
-    /// assert_eq!(*hashcache.get(&3).unwrap().get(), 7);
+    /// assert_eq!(*hashcache.get_sync(&3).unwrap().get(), 7);
     /// ```
     #[inline]
     pub fn or_put(self, val: V) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
@@ -1279,7 +1283,7 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// hashcache.entry_sync(19).or_put_with(|| 5);
-    /// assert_eq!(*hashcache.get(&19).unwrap().get(), 5);
+    /// assert_eq!(*hashcache.get_sync(&19).unwrap().get(), 5);
     /// ```
     #[inline]
     pub fn or_put_with<F: FnOnce() -> V>(
@@ -1302,7 +1306,7 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// hashcache.entry_sync(11).or_put_with_key(|k| if *k == 11 { 7 } else { 3 });
-    /// assert_eq!(*hashcache.get(&11).unwrap().get(), 7);
+    /// assert_eq!(*hashcache.get_sync(&11).unwrap().get(), 7);
     /// ```
     #[inline]
     pub fn or_put_with_key<F: FnOnce(&K) -> V>(
@@ -1346,10 +1350,10 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// hashcache.entry_sync(37).and_modify(|v| { *v += 1 }).or_put(47);
-    /// assert_eq!(*hashcache.get(&37).unwrap().get(), 47);
+    /// assert_eq!(*hashcache.get_sync(&37).unwrap().get(), 47);
     ///
     /// hashcache.entry_sync(37).and_modify(|v| { *v += 1 }).or_put(3);
-    /// assert_eq!(*hashcache.get(&37).unwrap().get(), 48);
+    /// assert_eq!(*hashcache.get_sync(&37).unwrap().get(), 48);
     /// ```
     #[inline]
     #[must_use]
@@ -1404,7 +1408,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     /// hashcache.entry_sync(11).or_default();
-    /// assert_eq!(*hashcache.get(&11).unwrap().get(), 0);
+    /// assert_eq!(*hashcache.get_sync(&11).unwrap().get(), 0);
     /// ```
     #[inline]
     pub fn or_default(self) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
@@ -1539,7 +1543,7 @@ where
     ///     assert_eq!(*o.get(), 29);
     /// }
     ///
-    /// assert_eq!(*hashcache.get(&37).unwrap().get(), 29);
+    /// assert_eq!(*hashcache.get_sync(&37).unwrap().get(), 29);
     /// ```
     #[inline]
     pub fn get_mut(&mut self) -> &mut V {
@@ -1566,7 +1570,7 @@ where
     ///     assert_eq!(o.put(17), 11);
     /// }
     ///
-    /// assert_eq!(*hashcache.get(&37).unwrap().get(), 17);
+    /// assert_eq!(*hashcache.get_sync(&37).unwrap().get(), 17);
     /// ```
     #[inline]
     pub fn put(&mut self, val: V) -> V {
@@ -1690,7 +1694,7 @@ where
     ///     o.put_entry(29);
     /// }
     ///
-    /// assert_eq!(*hashcache.get(&19).unwrap().get(), 29);
+    /// assert_eq!(*hashcache.get_sync(&19).unwrap().get(), 29);
     /// ```
     #[inline]
     pub fn put_entry(self, val: V) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {

@@ -729,7 +729,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.remove_if(key, |_| true)
+        self.remove_if_sync(key, |_| true)
     }
 
     /// Removes a key-value pair if the key exists.
@@ -752,43 +752,6 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.remove_if_async(key, |_| true).await
-    }
-
-    /// Removes a key-value pair if the key exists and the given condition is met.
-    ///
-    /// Returns `None` if the key does not exist or the condition was not met.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.remove_if(&1, |v| { *v += 1; false }).is_none());
-    /// assert_eq!(hashmap.remove_if(&1, |v| *v == 1).unwrap(), (1, 1));
-    /// ```
-    #[inline]
-    pub fn remove_if<Q, F: FnOnce(&mut V) -> bool>(&self, key: &Q, condition: F) -> Option<(K, V)>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        let hash = self.hash(key);
-        let guard = Guard::default();
-        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
-            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
-            if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
-                (
-                    Some(writer.remove(data_block, &mut entry_ptr, &guard)),
-                    writer.len() <= 1,
-                )
-            } else {
-                (None, false)
-            }
-        })
-        .ok()
-        .flatten()
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -832,12 +795,9 @@ where
         .flatten()
     }
 
-    /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
+    /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
-    /// use [`read_sync`](Self::read_sync) if read-only access is sufficient.
-    ///
-    /// Returns `None` if the key does not exist.
+    /// Returns `None` if the key does not exist or the condition was not met.
     ///
     /// # Examples
     ///
@@ -846,35 +806,31 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.get(&1).is_none());
-    /// assert!(hashmap.insert(1, 10).is_ok());
-    /// assert_eq!(*hashmap.get(&1).unwrap().get(), 10);
-    ///
-    /// *hashmap.get(&1).unwrap() = 11;
-    /// assert_eq!(*hashmap.get(&1).unwrap(), 11);
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.remove_if_sync(&1, |v| { *v += 1; false }).is_none());
+    /// assert_eq!(hashmap.remove_if_sync(&1, |v| *v == 1).unwrap(), (1, 1));
     /// ```
     #[inline]
-    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<'_, K, V, H>>
+    pub fn remove_if_sync<Q, F: FnOnce(&mut V) -> bool>(
+        &self,
+        key: &Q,
+        condition: F,
+    ) -> Option<(K, V)>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
         let guard = Guard::default();
-        self.optional_writer_sync(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
-            if entry_ptr.is_valid() {
-                let locked_entry =
-                    LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
-                        .prolong_lifetime(self);
-                return (
-                    Some(OccupiedEntry {
-                        hashmap: self,
-                        locked_entry,
-                    }),
-                    false,
-                );
+        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
+            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
+            if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
+                (
+                    Some(writer.remove(data_block, &mut entry_ptr, &guard)),
+                    writer.len() <= 1,
+                )
+            } else {
+                (None, false)
             }
-            (None, false)
         })
         .ok()
         .flatten()
@@ -922,6 +878,54 @@ where
             (None, false)
         })
         .await
+        .ok()
+        .flatten()
+    }
+
+    /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
+    ///
+    /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
+    /// use [`read_sync`](Self::read_sync) if read-only access is sufficient.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.get_sync(&1).is_none());
+    /// assert!(hashmap.insert(1, 10).is_ok());
+    /// assert_eq!(*hashmap.get_sync(&1).unwrap().get(), 10);
+    ///
+    /// *hashmap.get_sync(&1).unwrap() = 11;
+    /// assert_eq!(*hashmap.get_sync(&1).unwrap(), 11);
+    /// ```
+    #[inline]
+    pub fn get_sync<Q>(&self, key: &Q) -> Option<OccupiedEntry<'_, K, V, H>>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        let hash = self.hash(key);
+        let guard = Guard::default();
+        self.optional_writer_sync(hash, &guard, |writer, data_block, index, len| {
+            let entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
+            if entry_ptr.is_valid() {
+                let locked_entry =
+                    LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
+                        .prolong_lifetime(self);
+                return (
+                    Some(OccupiedEntry {
+                        hashmap: self,
+                        locked_entry,
+                    }),
+                    false,
+                );
+            }
+            (None, false)
+        })
         .ok()
         .flatten()
     }
@@ -1278,25 +1282,6 @@ where
 
     /// Clears the [`HashMap`] by removing all key-value pairs.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// hashmap.clear();
-    ///
-    /// assert!(!hashmap.contains_sync(&1));
-    /// ```
-    #[inline]
-    pub fn clear(&self) {
-        self.retain_sync(|_, _| false);
-    }
-
-    /// Clears the [`HashMap`] by removing all key-value pairs.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -1312,6 +1297,25 @@ where
     #[inline]
     pub async fn clear_async(&self) {
         self.retain_async(|_, _| false).await;
+    }
+
+    /// Clears the [`HashMap`] by removing all key-value pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// hashmap.clear_sync();
+    ///
+    /// assert!(!hashmap.contains_sync(&1));
+    /// ```
+    #[inline]
+    pub fn clear_sync(&self) {
+        self.retain_sync(|_, _| false);
     }
 
     /// Returns the number of entries in the [`HashMap`].
