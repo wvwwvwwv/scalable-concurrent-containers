@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.0.1
+
+* Dependencies updated to the latest versions.
+
 3.0.0
 
 * New API.

@@ -4,26 +4,21 @@
 ![Crates.io](https://img.shields.io/crates/l/scc)
 ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/wvwwvwwv/scalable-concurrent-containers/scc.yml?branch=main)
 
-A collection of high-performance containers and utilities for concurrent and asynchronous programming.
+A collection of high-performance containers and utilities providing both asynchronous and synchronous interfaces.
 
 #### Features
 
-- Asynchronous counterparts of synchronous methods, with asynchronous methods suffixed with `_async` and synchronous methods suffixed with `_sync`.
-- [`Equivalent`](https://github.com/indexmap-rs/equivalent), [`Loom`](https://github.com/tokio-rs/loom) and [`Serde`](https://github.com/serde-rs/serde) support: `features = ["equivalent", "loom", "serde"]`.
-- Near-linear scalability.
-- No spin locks and no busy loops.
+- Provides both asynchronous and synchronous interfaces.
 - SIMD lookup to scan multiple entries in parallel: requires `RUSTFLAGS='-C target_feature=+avx2'` on `x86_64`.
+- [`Equivalent`](https://github.com/indexmap-rs/equivalent), [`Loom`](https://github.com/tokio-rs/loom) and [`Serde`](https://github.com/serde-rs/serde) support: `features = ["equivalent", "loom", "serde"]`.
 
-#### Concurrent and Asynchronous Containers
+#### Concurrent Containers
 
-- [`HashMap`](#hashmap) is a concurrent and asynchronous hash map.
-- [`HashSet`](#hashset) is a concurrent and asynchronous hash set.
-- [`HashIndex`](#hashindex) is a read-optimized concurrent and asynchronous hash map.
-- [`HashCache`](#hashcache) is a 32-way associative cache backed by [`HashMap`](#hashmap).
-- [`TreeIndex`](#treeindex) is a read-optimized concurrent and asynchronous B-plus tree.
-
-#### Utilities for Concurrent Programming
-
+- [`HashMap`](#hashmap) is a concurrent hash map.
+- [`HashSet`](#hashset) is a concurrent hash set.
+- [`HashIndex`](#hashindex) is a read-optimized concurrent hash map.
+- [`HashCache`](#hashcache) is a 32-way associative concurrent cache backed by [`HashMap`](#hashmap).
+- [`TreeIndex`](#treeindex) is a read-optimized concurrent B-plus tree.
 - [`LinkedList`](#linkedlist) is a trait that implements a lock-free concurrent singly linked list.
 - [`Queue`](#queue) is a concurrent lock-free first-in-first-out container.
 - [`Stack`](#stack) is a concurrent lock-free last-in-first-out container.
