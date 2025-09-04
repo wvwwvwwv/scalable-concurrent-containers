@@ -2670,6 +2670,8 @@ mod treeindex {
                                 );
                                 assert!(tree.peek(&end_bound, &Guard::new()).is_some());
                             }
+                            // Give the scheduler a chance to run the other task.
+                            task::yield_now().await;
                         }
                     }
                 }));

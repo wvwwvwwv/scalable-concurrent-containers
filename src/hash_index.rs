@@ -1,4 +1,4 @@
-//! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
+//! [`HashIndex`] is a read-optimized concurrent hash map.
 
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
@@ -20,9 +20,9 @@ use crate::async_helper::SendableGuard;
 
 /// Scalable concurrent hash index.
 ///
-/// [`HashIndex`] is a concurrent and asynchronous hash map data structure optimized for parallel
-/// read operations. The key characteristics of [`HashIndex`] are similar to that of
-/// [`HashMap`](super::HashMap) except its read operations are lock-free.
+/// [`HashIndex`] is a concurrent hash map data structure optimized for parallel read operations.
+/// The key characteristics of [`HashIndex`] are similar to that of [`HashMap`](super::HashMap)
+/// except its read operations are lock-free.
 ///
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
 ///

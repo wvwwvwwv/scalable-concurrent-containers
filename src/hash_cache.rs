@@ -1,5 +1,4 @@
-//! [`HashCache`] is a concurrent and asynchronous 32-way associative cache backed by
-//! [`HashMap`](super::HashMap).
+//! [`HashCache`] is a concurrent 32-way associative cache backed by [`HashMap`](super::HashMap).
 
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};

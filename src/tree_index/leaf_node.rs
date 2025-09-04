@@ -33,13 +33,10 @@ pub struct LeafNode<K, V> {
     /// It stores the maximum key in the node, and key-value pairs are first pushed to this
     /// [`Leaf`] until it splits.
     unbounded_child: AtomicShared<Leaf<K, V>>,
-
     /// Ongoing split operation.
     split_op: StructuralChange<K, V>,
-
     /// The latch protecting the [`LeafNode`].
     latch: AtomicU8,
-
     /// `wait_queue` for `latch`.
     wait_queue: WaitQueue,
 }

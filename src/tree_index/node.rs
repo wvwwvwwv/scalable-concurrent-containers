@@ -14,7 +14,6 @@ use crate::async_helper::DeriveAsyncWait;
 pub enum Node<K, V> {
     /// Internal node.
     Internal(InternalNode<K, V>),
-
     /// Leaf node.
     Leaf(LeafNode<K, V>),
 }

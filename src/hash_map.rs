@@ -1,4 +1,4 @@
-//! [`HashMap`] is a concurrent and asynchronous hash map.
+//! [`HashMap`] is a concurrent hash map.
 
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
@@ -19,10 +19,10 @@ use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, Writer};
 
 /// Scalable concurrent hash map.
 ///
-/// [`HashMap`] is a concurrent and asynchronous hash map data structure optimized for highly
-/// concurrent workloads. [`HashMap`] has a dynamically sized array of buckets where a bucket is a
-/// fixed-size hash table with linear probing that can be expanded by allocating a linked list of
-/// smaller buckets when it is full.
+/// [`HashMap`] is a concurrent hash map data structure optimized for highly concurrent workloads.
+/// [`HashMap`] has a dynamically sized array of buckets where a bucket is a fixed-size hash table
+/// with linear probing that can be expanded by allocating a linked list of smaller buckets when it
+/// is full.
 ///
 /// ## The key features of [`HashMap`]
 ///

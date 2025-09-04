@@ -29,9 +29,6 @@ pub use queue::Queue;
 
 pub use sdd::{AtomicShared, Guard, Shared, Tag};
 
-#[cfg(feature = "serde")]
-mod serde;
-
 pub mod stack;
 pub use stack::Stack;
 
@@ -51,6 +48,9 @@ mod maybe_std {
 mod maybe_std {
     pub(crate) use std::sync::atomic::{AtomicU8, AtomicUsize};
 }
+
+#[cfg(feature = "serde")]
+mod serde;
 
 #[cfg(test)]
 mod tests;

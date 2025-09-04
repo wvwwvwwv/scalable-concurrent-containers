@@ -19,10 +19,10 @@ A collection of high-performance containers and utilities providing both asynchr
 - [`HashIndex`](#hashindex) is a read-optimized concurrent hash map.
 - [`HashCache`](#hashcache) is a 32-way associative concurrent cache backed by [`HashMap`](#hashmap).
 - [`TreeIndex`](#treeindex) is a read-optimized concurrent B-plus tree.
-- [`LinkedList`](#linkedlist) is a trait that implements a lock-free concurrent singly linked list.
+- [`Bag`](#bag) is a concurrent lock-free unordered opaque container.
 - [`Queue`](#queue) is a concurrent lock-free first-in-first-out container.
 - [`Stack`](#stack) is a concurrent lock-free last-in-first-out container.
-- [`Bag`](#bag) is a concurrent lock-free unordered opaque container.
+- [`LinkedList`](#linkedlist) is a trait that implements a lock-free concurrent singly linked list.
 
 ## `HashMap`
 

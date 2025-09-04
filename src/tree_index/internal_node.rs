@@ -22,19 +22,15 @@ use crate::maybe_std::AtomicU8;
 pub struct InternalNode<K, V> {
     /// Children of the [`InternalNode`].
     pub(super) children: Leaf<K, AtomicShared<Node<K, V>>>,
-
     /// A child [`Node`] that has no upper key bound.
     ///
     /// It stores the maximum key in the node, and key-value pairs are first pushed to this [`Node`]
     /// until it splits.
     pub(super) unbounded_child: AtomicShared<Node<K, V>>,
-
     /// Ongoing split operation.
     split_op: StructuralChange<K, V>,
-
     /// The latch protecting the [`InternalNode`].
     latch: AtomicU8,
-
     /// `wait_queue` for `latch`.
     wait_queue: WaitQueue,
 }

@@ -1,4 +1,4 @@
-//! [`HashSet`] is a concurrent and asynchronous hash set.
+//! [`HashSet`] is a concurrent hash set.
 
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
@@ -11,7 +11,7 @@ use crate::hash_map;
 
 /// Scalable concurrent hash set.
 ///
-/// [`HashSet`] is a concurrent and asynchronous hash set based on [`HashMap`].
+/// [`HashSet`] is a concurrent hash set based on [`HashMap`].
 pub struct HashSet<K, H = RandomState>
 where
     H: BuildHasher,

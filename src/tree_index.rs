@@ -1,4 +1,4 @@
-//! [`TreeIndex`] is a read-optimized concurrent and asynchronous B-plus tree.
+//! [`TreeIndex`] is a read-optimized concurrent B-plus tree.
 
 mod internal_node;
 mod leaf;
@@ -23,10 +23,10 @@ use node::Node;
 
 /// Scalable concurrent B-plus tree.
 ///
-/// [`TreeIndex`] is a concurrent and asynchronous B-plus tree variant optimized for read
-/// operations. Read operations, such as read iteration over entries, are neither blocked nor
-/// interrupted by other threads or tasks. Write operations, such as insert and remove, do not block
-/// if structural changes are not required.
+/// [`TreeIndex`] is a concurrent B-plus tree variant optimized for read operations. Read
+/// operations, such as read iteration over entries, are neither blocked nor interrupted by other
+/// threads or tasks. Write operations, such as insert and remove, do not block if structural
+/// changes are not required.
 ///
 /// ## Note
 ///
