@@ -718,14 +718,12 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             metadata.occupied_bitmap.load(Relaxed)
         };
 
-        let mut matching: u32 = 0;
         // Expect that the loop is vectorized by the compiler.
         for i in 0..LEN {
-            if *Self::read_cell(&metadata.partial_hash_array[i]) == Self::partial_hash(hash) {
-                matching |= 1_u32 << i;
+            if *Self::read_cell(&metadata.partial_hash_array[i]) != Self::partial_hash(hash) {
+                bitmap &= !(1_u32 << i);
             }
         }
-        bitmap &= matching;
 
         let mut offset = bitmap.trailing_zeros();
         while offset != u32::BITS {
