@@ -420,6 +420,12 @@ assert!(head.next_ptr(Relaxed, &guard).is_null());
 
 ## Performance
 
+### SIMD support
+
+[`HashMap`](#hashmap) is optimized for 256-bit SIMD instructions. Therefore, it is recommended to compile with `avx2` or equivalent options on `x86-64` targets, or with respective features on other platforms.
+
+* Note that Apple M-series CPUs do not support the 256-bit SIMD instructions required for optimal performance.
+
 ### [`HashMap`](#hashmap) Tail Latency
 
 The expected tail latency of a distribution of latencies of 1048576 insertion operations (`K = u64, V = u64`) ranges from 160 microseconds to 180 microseconds on Apple M4 Pro.
