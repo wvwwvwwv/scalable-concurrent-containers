@@ -455,16 +455,12 @@ where
                     index,
                     current_array.len(),
                 );
-                if try_shrink {
-                    if let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
-                        if current_array.initiate_sampling(index) {
-                            self.try_shrink_or_rebuild(
-                                current_array,
-                                index,
-                                sendable_guard.guard(),
-                            );
-                        }
-                    }
+                if try_shrink
+                    && current_array.initiate_sampling(index)
+                    && sendable_guard.check_ref(self.bucket_array(), current_array, Acquire)
+                {
+                    // Checking the reference is sufficient since ABA does not affect correctness.
+                    self.try_shrink_or_rebuild(current_array, index, sendable_guard.guard());
                 }
                 return Ok(result);
             }
@@ -543,10 +539,13 @@ where
                     if !f(reader, data_block) {
                         return;
                     }
-                } else {
+                }
+
+                if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
                     // `current_array` is no longer the current one.
                     break;
                 }
+
                 start_index += 1;
             }
 
@@ -647,23 +646,27 @@ where
                     try_shrink |= removed;
                     if stop {
                         // Stop iterating over buckets.
-                        if try_shrink {
-                            self.try_shrink_or_rebuild(current_array, 0, sendable_guard.guard());
-                        }
-                        return;
+                        start_index = current_array_len;
+                        break;
                     }
-                } else {
-                    // Retry the operation for the same reason above.
+                }
+
+                if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+                    // `current_array` is no longer the current one.
                     break;
                 }
+
                 start_index += 1;
             }
 
             if start_index == current_array_len {
-                if try_shrink {
-                    self.try_shrink_or_rebuild(current_array, 0, sendable_guard.guard());
-                }
                 break;
+            }
+        }
+
+        if try_shrink {
+            if let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
+                self.try_shrink_or_rebuild(current_array, 0, sendable_guard.guard());
             }
         }
     }
@@ -708,10 +711,8 @@ where
                     try_shrink |= removed;
                     if stop {
                         // Stop iterating over buckets.
-                        if try_shrink {
-                            self.try_shrink_or_rebuild(current_array, 0, guard);
-                        }
-                        return;
+                        start_index = current_array_len;
+                        break;
                     }
                 } else {
                     // `current_array` is no longer the current one.
@@ -800,10 +801,8 @@ where
         self.incremental_rehash_async(current_array, sendable_guard)
             .await;
 
-        if !sendable_guard
-            .load(self.bucket_array(), Acquire)
-            .is_some_and(|r| ptr::eq(r, current_array))
-        {
+        if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+            // A new bucket array was created in the meantime.
             return false;
         }
 
@@ -821,16 +820,15 @@ where
                         sendable_guard,
                     )
                     .await;
+
+                    if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+                        // A new bucket array was created in the meantime.
+                        return false;
+                    }
                 } else if !sendable_guard.is_valid() {
                     // The bucket was killed and the guard has been invalidated. Validating the
                     // reference is not sufficient in this case since the current bucket array could
                     // have been replaced with a new one.
-                    return false;
-                } else if !sendable_guard
-                    .load(self.bucket_array(), Acquire)
-                    .is_some_and(|a| ptr::eq(a, current_array))
-                {
-                    // A new bucket array was created in the meantime.
                     return false;
                 }
 

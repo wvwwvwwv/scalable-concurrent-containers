@@ -1,6 +1,7 @@
 use std::cell::UnsafeCell;
 use std::future::Future;
 use std::pin::Pin;
+use std::ptr;
 use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
 
@@ -70,6 +71,15 @@ impl SendableGuard {
     #[inline]
     pub(crate) fn load<T>(&self, atomic_ptr: &AtomicShared<T>, mo: Ordering) -> Option<&T> {
         atomic_ptr.load(mo, self.guard()).as_ref()
+    }
+
+    /// Checks if the reference is valid.
+    #[inline]
+    pub(crate) fn check_ref<T>(&self, atomic_ptr: &AtomicShared<T>, r: &T, mo: Ordering) -> bool {
+        atomic_ptr
+            .load(mo, self.guard())
+            .as_ref()
+            .is_some_and(|s| ptr::eq(s, r))
     }
 }
 

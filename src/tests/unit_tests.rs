@@ -499,7 +499,7 @@ mod hashmap {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..64 {
             let num_tasks = 8;
-            let workload_size = 256;
+            let workload_size = 512;
             let mut tasks = Vec::with_capacity(num_tasks);
             let barrier = Arc::new(AsyncBarrier::new(num_tasks));
             for task_id in 0..num_tasks {
@@ -621,7 +621,7 @@ mod hashmap {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..64 {
             let num_tasks = 8;
-            let workload_size = 256;
+            let workload_size = 512;
             let mut tasks = Vec::with_capacity(num_tasks);
             let barrier = Arc::new(AsyncBarrier::new(num_tasks));
             for task_id in 0..num_tasks {
@@ -1377,12 +1377,12 @@ mod hashindex {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn entry_read_next_async() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..64 {
             let num_tasks = 8;
-            let workload_size = 256;
+            let workload_size = 512;
             let mut tasks = Vec::with_capacity(num_tasks);
             let barrier = Arc::new(AsyncBarrier::new(num_tasks));
             for task_id in 0..num_tasks {
