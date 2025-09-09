@@ -117,6 +117,23 @@ mod hashmap {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
+    async fn insert_capacity() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
+        let hashmap: HashMap<usize, R> = HashMap::default();
+        let workload_size = 1_048_576;
+        for k in 0..workload_size {
+            assert!(hashmap.insert_async(k, R::new(&INST_CNT)).await.is_ok());
+        }
+        assert_eq!(INST_CNT.load(Relaxed), workload_size);
+        assert_eq!(hashmap.len(), workload_size);
+        assert!(hashmap.capacity() >= workload_size);
+        drop(hashmap);
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
     async fn insert_drop_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 

@@ -812,17 +812,17 @@ where
                 let bucket = old_array.bucket(old_index);
                 let writer = Writer::lock_async(bucket, sendable_guard).await;
                 if let Some(writer) = writer {
-                    self.relocate_bucket_async(
-                        current_array,
-                        old_array,
-                        old_index,
-                        writer,
-                        sendable_guard,
-                    )
-                    .await;
-
-                    if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
-                        // A new bucket array was created in the meantime.
+                    if !self
+                        .relocate_bucket_async(
+                            current_array,
+                            old_array,
+                            old_index,
+                            writer,
+                            sendable_guard,
+                        )
+                        .await
+                    {
+                        // Bucket array validation failed.
                         return false;
                     }
                 } else if !sendable_guard.is_valid() {
@@ -882,6 +882,8 @@ where
     }
 
     /// Relocates the bucket to the current bucket array.
+    ///
+    /// Returns `false` if the bucket array has been updated.
     async fn relocate_bucket_async<'g>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
@@ -889,10 +891,11 @@ where
         old_index: usize,
         old_writer: Writer<'g, K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
-    ) {
+    ) -> bool {
         if old_writer.len() == 0 {
+            let validated = sendable_guard.check_ref(self.bucket_array(), current_array, Acquire);
             old_writer.kill();
-            return;
+            return validated;
         }
 
         let target_index =
@@ -946,7 +949,11 @@ where
                 sendable_guard.guard(),
             );
         }
+
+        // Validate the reference before killing the bucket.
+        let validated = sendable_guard.check_ref(self.bucket_array(), current_array, Acquire);
         old_writer.kill();
+        validated
     }
 
     /// Relocates the bucket to the current bucket array.
