@@ -312,6 +312,10 @@ where
                 ) {
                     return Some(f(&entry.0, &entry.1));
                 }
+            }
+            if sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+                // This is needed since writers may fail when relocating a bucket, leaving valid
+                // entries in both old and new buckets.
                 break;
             }
         }
@@ -331,7 +335,8 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
+        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
+        while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
                 self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
@@ -346,6 +351,14 @@ where
                 }
                 break;
             }
+
+            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
+            if current_array_ptr == new_current_array_ptr {
+                // This is needed since writers may fail when relocating a bucket, leaving valid
+                // entries in both old and new buckets.
+                break;
+            }
+            current_array_ptr = new_current_array_ptr;
         }
         None
     }

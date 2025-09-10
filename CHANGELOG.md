@@ -3,9 +3,9 @@
 
 ## Version 3
 
-3.0.3 - 3.0.4
+3.0.3 - 3.0.5
 
-* Fix a potential panic in asynchronous operations of `Hash*` containers.
+* Fix rare data races in asynchronous operations of `Hash*` containers.
 
 3.0.1 - 3.0.2
 
