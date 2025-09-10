@@ -3,9 +3,13 @@
 
 ## Version 3
 
-3.0.3 - 3.0.5
+3.0.5
 
-* Fix rare data races in asynchronous operations of `Hash*` containers.
+* Fix a potential issue with `HashMap::read_*` after `HashMap::insert_*` panics.
+
+3.0.3 - 3.0.4
+
+* Fix potential data races in asynchronous operations of `Hash*` containers.
 
 3.0.1 - 3.0.2
 

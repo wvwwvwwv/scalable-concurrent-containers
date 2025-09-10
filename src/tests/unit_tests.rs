@@ -3628,7 +3628,7 @@ mod malfunction {
     struct R(&'static AtomicUsize, &'static AtomicBool, bool);
     impl R {
         fn new(cnt: &'static AtomicUsize, never_panic: &'static AtomicBool) -> R {
-            assert!(never_panic.load(Relaxed) || rand::random::<u8>() % 4 != 0);
+            assert!(never_panic.load(Relaxed) || rand::random::<u8>() % 3 != 0);
             cnt.fetch_add(1, AcqRel);
             R(cnt, never_panic, false)
         }
@@ -3639,7 +3639,7 @@ mod malfunction {
     }
     impl Clone for R {
         fn clone(&self) -> Self {
-            assert!(self.1.load(Relaxed) || rand::random::<u8>() % 8 != 0);
+            assert!(self.1.load(Relaxed) || rand::random::<u8>() % 5 != 0);
             self.0.fetch_add(1, AcqRel);
             Self(self.0, self.1, self.2)
         }
@@ -3647,7 +3647,7 @@ mod malfunction {
     impl Drop for R {
         fn drop(&mut self) {
             self.0.fetch_sub(1, AcqRel);
-            assert!(self.1.load(Relaxed) || self.2 || rand::random::<u8>() % 16 != 0);
+            assert!(self.1.load(Relaxed) || self.2 || rand::random::<u8>() % 11 != 0);
         }
     }
 
