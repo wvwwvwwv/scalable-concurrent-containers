@@ -3,7 +3,7 @@
 
 ## Version 3
 
-3.0.3
+3.0.3 - 3.0.4
 
 * Fix a potential panic in asynchronous operations of `Hash*` containers.
 

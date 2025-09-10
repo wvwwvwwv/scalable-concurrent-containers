@@ -456,10 +456,11 @@ where
                     current_array.len(),
                 );
                 if try_shrink
-                    && current_array.initiate_sampling(index)
                     && sendable_guard.check_ref(self.bucket_array(), current_array, Acquire)
+                    && current_array.initiate_sampling(index)
                 {
-                    // Checking the reference is sufficient since ABA does not affect correctness.
+                    // Checking the reference is necessary (the write lock was just released) and
+                    // sufficient (length mismatches from ABA problems do not matter).
                     self.try_shrink_or_rebuild(current_array, index, sendable_guard.guard());
                 }
                 return Ok(result);
