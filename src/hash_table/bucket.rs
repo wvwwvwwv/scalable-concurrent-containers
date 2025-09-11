@@ -822,18 +822,22 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     pub(super) fn kill(self) {
         debug_assert_eq!(self.len(), 0);
         debug_assert!(self.rw_lock.is_locked(Relaxed));
-        debug_assert!(TYPE == INDEX || self.metadata.link.is_null(Relaxed));
         debug_assert!(
             TYPE != INDEX
                 || self.metadata.removed_bitmap_or_lru_tail.load(Relaxed)
                     == self.metadata.occupied_bitmap.load(Relaxed)
         );
 
-        if TYPE == INDEX {
+        if !self.metadata.link.is_null(Relaxed) {
             let mut link = self.metadata.link.swap((None, Tag::None), Acquire).0;
             while let Some(current) = link {
                 link = current.metadata.link.swap((None, Tag::None), Acquire).0;
-                drop(current);
+                let released = if TYPE == INDEX {
+                    current.release()
+                } else {
+                    unsafe { current.drop_in_place() }
+                };
+                debug_assert!(TYPE == INDEX || released);
             }
         }
 

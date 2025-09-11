@@ -898,8 +898,9 @@ where
         let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
             Default::default();
         let mut distribution = [0_usize; MAX_RESIZE_FACTOR];
-        let mut target_data = [(0_usize, 0_u64); BUCKET_LEN];
-        let mut extended_target_data = Vec::new();
+        let mut indexes = [[0_usize; BUCKET_LEN]; 2];
+        let mut hashes = [[0_u64; BUCKET_LEN]; 2];
+        let mut extended = Vec::new();
         let old_data_block = old_array.data_block(old_index);
 
         // Collect data for relocation.
@@ -922,11 +923,12 @@ where
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
                 (new_index, hash)
             };
-            if position < target_data.len() {
-                target_data[position] = (new_index, hash);
+            if position < BUCKET_LEN * 2 {
+                indexes[position / BUCKET_LEN][position % BUCKET_LEN] = new_index;
+                hashes[position / BUCKET_LEN][position % BUCKET_LEN] = hash;
                 position += 1;
             } else {
-                extended_target_data.push((new_index, hash));
+                extended.push((new_index, hash));
             }
             distribution[new_index - target_index] += 1;
         }
@@ -949,10 +951,13 @@ where
         entry_ptr = EntryPtr::new(sendable_guard.guard());
         position = 0;
         while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
-            let (new_index, hash) = if position < target_data.len() {
-                target_data[position]
+            let (new_index, hash) = if position < BUCKET_LEN * 2 {
+                (
+                    indexes[position / BUCKET_LEN][position % BUCKET_LEN],
+                    hashes[position / BUCKET_LEN][position % BUCKET_LEN],
+                )
             } else {
-                extended_target_data[position - target_data.len()]
+                extended[position - BUCKET_LEN * 2]
             };
             let target_bucket = unsafe {
                 target_buckets[new_index - target_index]
@@ -997,8 +1002,9 @@ where
         let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
             Default::default();
         let mut distribution = [0_usize; MAX_RESIZE_FACTOR];
-        let mut target_data = [(0_usize, 0_u64); BUCKET_LEN];
-        let mut extended_target_data = Vec::new();
+        let mut indexes = [[0_usize; BUCKET_LEN]; 2];
+        let mut hashes = [[0_u64; BUCKET_LEN]; 2];
+        let mut extended = Vec::new();
         let old_data_block = old_array.data_block(old_index);
 
         // Collect data for relocation.
@@ -1021,11 +1027,12 @@ where
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
                 (new_index, hash)
             };
-            if position < target_data.len() {
-                target_data[position] = (new_index, hash);
+            if position < BUCKET_LEN * 2 {
+                indexes[position / BUCKET_LEN][position % BUCKET_LEN] = new_index;
+                hashes[position / BUCKET_LEN][position % BUCKET_LEN] = hash;
                 position += 1;
             } else {
-                extended_target_data.push((new_index, hash));
+                extended.push((new_index, hash));
             }
             distribution[new_index - target_index] += 1;
         }
@@ -1052,10 +1059,13 @@ where
         entry_ptr = EntryPtr::new(guard);
         position = 0;
         while entry_ptr.move_to_next(&old_writer, guard) {
-            let (new_index, hash) = if position < target_data.len() {
-                target_data[position]
+            let (new_index, hash) = if position < BUCKET_LEN * 2 {
+                (
+                    indexes[position / BUCKET_LEN][position % BUCKET_LEN],
+                    hashes[position / BUCKET_LEN][position % BUCKET_LEN],
+                )
             } else {
-                extended_target_data[position - target_data.len()]
+                extended[position - BUCKET_LEN * 2]
             };
             let target_bucket = unsafe {
                 target_buckets[new_index - target_index]
