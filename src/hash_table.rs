@@ -1331,8 +1331,8 @@ where
                 capacity
             } else {
                 let mut new_capacity = capacity;
-                while new_capacity <= (estimated_num_entries / 8) * 15 {
-                    // Double `new_capacity` until the expected load factor is below 0.5.
+                while (new_capacity / 16) * 7 <= estimated_num_entries {
+                    // Double `new_capacity` until the expected load factor becomes ~0.43.
                     if new_capacity == self.maximum_capacity() {
                         break;
                     }
