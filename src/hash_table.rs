@@ -897,9 +897,8 @@ where
             Self::from_index_to_range(old_array.len(), current_array.len(), old_index).0;
         let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
             Default::default();
-        let mut distribution = [0_usize; MAX_RESIZE_FACTOR];
-        let mut indexes = [[0_usize; BUCKET_LEN]; 2];
-        let mut hashes = [[0_u64; BUCKET_LEN]; 2];
+        let mut distribution = [0_u32; MAX_RESIZE_FACTOR];
+        let mut rehash_data = [[(0_u8, 0_u8); BUCKET_LEN]; 2];
         let mut extended = Vec::new();
         let old_data_block = old_array.data_block(old_index);
 
@@ -908,29 +907,26 @@ where
         let mut position = 0;
         while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
             let old_entry = entry_ptr.get(old_data_block);
-            let (new_index, hash) = if old_array.len() >= current_array.len() {
+            let (index, partial_hash) = if old_array.len() >= current_array.len() {
                 debug_assert_eq!(
                     current_array.calculate_bucket_index(self.hash(&old_entry.0)),
                     target_index
                 );
-                (
-                    target_index,
-                    u64::from(entry_ptr.partial_hash(&*old_writer)),
-                )
+                (0_u8, entry_ptr.partial_hash(&*old_writer))
             } else {
                 let hash = self.hash(&old_entry.0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                (new_index, hash)
+                #[allow(clippy::cast_possible_truncation)]
+                ((new_index - target_index) as u8, hash as u8)
             };
             if position < BUCKET_LEN * 2 {
-                indexes[position / BUCKET_LEN][position % BUCKET_LEN] = new_index;
-                hashes[position / BUCKET_LEN][position % BUCKET_LEN] = hash;
+                rehash_data[position / BUCKET_LEN][position % BUCKET_LEN] = (index, partial_hash);
                 position += 1;
             } else {
-                extended.push((new_index, hash));
+                extended.push((index, partial_hash));
             }
-            distribution[new_index - target_index] += 1;
+            distribution[usize::from(index)] += 1;
         }
 
         // Allocate memory and lock the target bucket..
@@ -942,7 +938,7 @@ where
                         .await
                         .unwrap_unchecked()
                 };
-                writer.reserve_slots(*d, sendable_guard.guard());
+                writer.reserve_slots((*d) as usize, sendable_guard.guard());
                 target_buckets[i].replace(writer);
             }
         }
@@ -951,22 +947,19 @@ where
         entry_ptr = EntryPtr::new(sendable_guard.guard());
         position = 0;
         while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
-            let (new_index, hash) = if position < BUCKET_LEN * 2 {
-                (
-                    indexes[position / BUCKET_LEN][position % BUCKET_LEN],
-                    hashes[position / BUCKET_LEN][position % BUCKET_LEN],
-                )
+            let (index, partial_hash) = if position < BUCKET_LEN * 2 {
+                rehash_data[position / BUCKET_LEN][position % BUCKET_LEN]
             } else {
                 extended[position - BUCKET_LEN * 2]
             };
             let target_bucket = unsafe {
-                target_buckets[new_index - target_index]
+                target_buckets[usize::from(index)]
                     .as_mut()
                     .unwrap_unchecked()
             };
             target_bucket.extract_from(
-                current_array.data_block(new_index),
-                hash,
+                current_array.data_block(target_index + usize::from(index)),
+                u64::from(partial_hash),
                 &old_writer,
                 old_data_block,
                 &mut entry_ptr,
@@ -1001,9 +994,8 @@ where
             Self::from_index_to_range(old_array.len(), current_array.len(), old_index).0;
         let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
             Default::default();
-        let mut distribution = [0_usize; MAX_RESIZE_FACTOR];
-        let mut indexes = [[0_usize; BUCKET_LEN]; 2];
-        let mut hashes = [[0_u64; BUCKET_LEN]; 2];
+        let mut distribution = [0_u32; MAX_RESIZE_FACTOR];
+        let mut rehash_data = [[(0_u8, 0_u8); BUCKET_LEN]; 2];
         let mut extended = Vec::new();
         let old_data_block = old_array.data_block(old_index);
 
@@ -1012,29 +1004,26 @@ where
         let mut position = 0;
         while entry_ptr.move_to_next(&old_writer, guard) {
             let old_entry = entry_ptr.get(old_data_block);
-            let (new_index, hash) = if old_array.len() >= current_array.len() {
+            let (index, partial_hash) = if old_array.len() >= current_array.len() {
                 debug_assert_eq!(
                     current_array.calculate_bucket_index(self.hash(&old_entry.0)),
                     target_index
                 );
-                (
-                    target_index,
-                    u64::from(entry_ptr.partial_hash(&*old_writer)),
-                )
+                (0_u8, entry_ptr.partial_hash(&*old_writer))
             } else {
                 let hash = self.hash(&old_entry.0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                (new_index, hash)
+                #[allow(clippy::cast_possible_truncation)]
+                ((new_index - target_index) as u8, hash as u8)
             };
             if position < BUCKET_LEN * 2 {
-                indexes[position / BUCKET_LEN][position % BUCKET_LEN] = new_index;
-                hashes[position / BUCKET_LEN][position % BUCKET_LEN] = hash;
+                rehash_data[position / BUCKET_LEN][position % BUCKET_LEN] = (index, partial_hash);
                 position += 1;
             } else {
-                extended.push((new_index, hash));
+                extended.push((index, partial_hash));
             }
-            distribution[new_index - target_index] += 1;
+            distribution[usize::from(index)] += 1;
         }
 
         // Allocate memory and lock the target bucket..
@@ -1050,7 +1039,7 @@ where
                     Writer::lock_sync(bucket)
                 };
                 let writer = unsafe { writer.unwrap_unchecked() };
-                writer.reserve_slots(*d, guard);
+                writer.reserve_slots((*d) as usize, guard);
                 target_buckets[i].replace(writer);
             }
         }
@@ -1059,22 +1048,19 @@ where
         entry_ptr = EntryPtr::new(guard);
         position = 0;
         while entry_ptr.move_to_next(&old_writer, guard) {
-            let (new_index, hash) = if position < BUCKET_LEN * 2 {
-                (
-                    indexes[position / BUCKET_LEN][position % BUCKET_LEN],
-                    hashes[position / BUCKET_LEN][position % BUCKET_LEN],
-                )
+            let (index, partial_hash) = if position < BUCKET_LEN * 2 {
+                rehash_data[position / BUCKET_LEN][position % BUCKET_LEN]
             } else {
                 extended[position - BUCKET_LEN * 2]
             };
             let target_bucket = unsafe {
-                target_buckets[new_index - target_index]
+                target_buckets[usize::from(index)]
                     .as_mut()
                     .unwrap_unchecked()
             };
             target_bucket.extract_from(
-                current_array.data_block(new_index),
-                hash,
+                current_array.data_block(target_index + usize::from(index)),
+                u64::from(partial_hash),
                 &old_writer,
                 old_data_block,
                 &mut entry_ptr,
