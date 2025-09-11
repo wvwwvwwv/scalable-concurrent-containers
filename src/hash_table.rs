@@ -312,10 +312,6 @@ where
                 ) {
                     return Some(f(&entry.0, &entry.1));
                 }
-            }
-            if sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
-                // This is needed since writers may fail when relocating a bucket, leaving valid
-                // entries in both old and new buckets.
                 break;
             }
         }
@@ -335,8 +331,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
+        while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
                 self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
@@ -351,14 +346,6 @@ where
                 }
                 break;
             }
-
-            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
-            if current_array_ptr == new_current_array_ptr {
-                // This is needed since writers may fail when relocating a bucket, leaving valid
-                // entries in both old and new buckets.
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
         }
         None
     }
@@ -553,13 +540,10 @@ where
                     if !f(reader, data_block) {
                         return;
                     }
-                }
-
-                if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+                } else {
                     // `current_array` is no longer the current one.
                     break;
                 }
-
                 start_index += 1;
             }
 
@@ -663,13 +647,10 @@ where
                         start_index = current_array_len;
                         break;
                     }
-                }
-
-                if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+                } else {
                     // `current_array` is no longer the current one.
                     break;
                 }
-
                 start_index += 1;
             }
 
@@ -916,9 +897,14 @@ where
             Self::from_index_to_range(old_array.len(), current_array.len(), old_index).0;
         let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
             Default::default();
-        let mut max_index = 0;
-        let mut entry_ptr = EntryPtr::new(sendable_guard.guard());
+        let mut distribution = [0_usize; MAX_RESIZE_FACTOR];
+        let mut target_data = [(0_usize, 0_u64); BUCKET_LEN];
+        let mut extended_target_data = Vec::new();
         let old_data_block = old_array.data_block(old_index);
+
+        // Collect data for relocation.
+        let mut entry_ptr = EntryPtr::new(sendable_guard.guard());
+        let mut position = 0;
         while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
             let old_entry = entry_ptr.get(old_data_block);
             let (new_index, hash) = if old_array.len() >= current_array.len() {
@@ -936,24 +922,43 @@ where
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
                 (new_index, hash)
             };
+            if position < target_data.len() {
+                target_data[position] = (new_index, hash);
+                position += 1;
+            } else {
+                extended_target_data.push((new_index, hash));
+            }
+            distribution[new_index - target_index] += 1;
+        }
 
-            while max_index <= new_index - target_index {
-                let target_bucket = current_array.bucket(max_index + target_index);
+        // Allocate memory and lock the target bucket..
+        for (i, d) in distribution.iter().enumerate() {
+            if *d != 0 {
+                let bucket = current_array.bucket(target_index + i);
                 let writer = unsafe {
-                    Writer::lock_async(target_bucket, sendable_guard)
+                    Writer::lock_async(bucket, sendable_guard)
                         .await
                         .unwrap_unchecked()
                 };
-                target_buckets[max_index].replace(writer);
-                max_index += 1;
+                writer.reserve_slots(*d, sendable_guard.guard());
+                target_buckets[i].replace(writer);
             }
+        }
 
+        // Relocate entries; it is infallible.
+        entry_ptr = EntryPtr::new(sendable_guard.guard());
+        position = 0;
+        while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
+            let (new_index, hash) = if position < target_data.len() {
+                target_data[position]
+            } else {
+                extended_target_data[position - target_data.len()]
+            };
             let target_bucket = unsafe {
                 target_buckets[new_index - target_index]
                     .as_mut()
                     .unwrap_unchecked()
             };
-
             target_bucket.extract_from(
                 current_array.data_block(new_index),
                 hash,
@@ -962,6 +967,7 @@ where
                 &mut entry_ptr,
                 sendable_guard.guard(),
             );
+            position += 1;
         }
 
         // Validate the reference before killing the bucket.
@@ -990,9 +996,14 @@ where
             Self::from_index_to_range(old_array.len(), current_array.len(), old_index).0;
         let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
             Default::default();
-        let mut max_index = 0;
-        let mut entry_ptr = EntryPtr::new(guard);
+        let mut distribution = [0_usize; MAX_RESIZE_FACTOR];
+        let mut target_data = [(0_usize, 0_u64); BUCKET_LEN];
+        let mut extended_target_data = Vec::new();
         let old_data_block = old_array.data_block(old_index);
+
+        // Collect data for relocation.
+        let mut entry_ptr = EntryPtr::new(guard);
+        let mut position = 0;
         while entry_ptr.move_to_next(&old_writer, guard) {
             let old_entry = entry_ptr.get(old_data_block);
             let (new_index, hash) = if old_array.len() >= current_array.len() {
@@ -1010,27 +1021,47 @@ where
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
                 (new_index, hash)
             };
+            if position < target_data.len() {
+                target_data[position] = (new_index, hash);
+                position += 1;
+            } else {
+                extended_target_data.push((new_index, hash));
+            }
+            distribution[new_index - target_index] += 1;
+        }
 
-            while max_index <= new_index - target_index {
-                let target_bucket = current_array.bucket(max_index + target_index);
+        // Allocate memory and lock the target bucket..
+        for (i, d) in distribution.iter().enumerate() {
+            if *d != 0 {
+                let bucket = current_array.bucket(target_index + i);
                 let writer = if TRY_LOCK {
-                    let Ok(writer) = Writer::try_lock(target_bucket) else {
+                    let Ok(writer) = Writer::try_lock(bucket) else {
                         return false;
                     };
                     writer
                 } else {
-                    Writer::lock_sync(target_bucket)
+                    Writer::lock_sync(bucket)
                 };
-                target_buckets[max_index].replace(unsafe { writer.unwrap_unchecked() });
-                max_index += 1;
+                let writer = unsafe { writer.unwrap_unchecked() };
+                writer.reserve_slots(*d, guard);
+                target_buckets[i].replace(writer);
             }
+        }
 
+        // Relocate entries; it is infallible.
+        entry_ptr = EntryPtr::new(guard);
+        position = 0;
+        while entry_ptr.move_to_next(&old_writer, guard) {
+            let (new_index, hash) = if position < target_data.len() {
+                target_data[position]
+            } else {
+                extended_target_data[position - target_data.len()]
+            };
             let target_bucket = unsafe {
                 target_buckets[new_index - target_index]
                     .as_mut()
                     .unwrap_unchecked()
             };
-
             target_bucket.extract_from(
                 current_array.data_block(new_index),
                 hash,
@@ -1039,7 +1070,9 @@ where
                 &mut entry_ptr,
                 guard,
             );
+            position += 1;
         }
+
         old_writer.kill();
         true
     }
@@ -1349,6 +1382,7 @@ where
                 for i in 0..len {
                     let writer = Writer::from_bucket(current_array.bucket(i));
                     if success {
+                        debug_assert_eq!(writer.len(), 0);
                         writer.kill();
                     }
                 }

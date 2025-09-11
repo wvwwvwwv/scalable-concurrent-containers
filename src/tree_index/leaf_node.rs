@@ -140,14 +140,14 @@ impl<K, V> LeafNode<K, V> {
     /// Unlocks the [`LeafNode`].
     fn unlock(&self) {
         debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
-        self.latch.store(Tag::None.into(), Release);
+        self.latch.swap(Tag::None.into(), Release);
         self.wait_queue.signal();
     }
 
     /// Retires itself.
     fn retire(&self) {
         debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
-        self.latch.store(RETIRED.into(), Release);
+        self.latch.swap(RETIRED.into(), Release);
         self.wait_queue.signal();
     }
 }

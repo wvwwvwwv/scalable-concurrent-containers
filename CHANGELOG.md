@@ -3,9 +3,9 @@
 
 ## Version 3
 
-3.0.5
+3.0.5 - 3.0.6
 
-* Fix a potential issue with `HashMap::read_*` after `HashMap::insert_*` panics.
+* Fix a potential duplicate key issue with `Hash*` containers if `HashMap::insert_*` fails to allocate memory.
 
 3.0.3 - 3.0.4
 

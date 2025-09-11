@@ -349,6 +349,37 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
     }
 
+    /// Reserves memory for additional entries.
+    pub(crate) fn reserve_slots(&self, additional: usize, guard: &Guard) {
+        debug_assert!(self.rw_lock.is_locked(Relaxed));
+
+        let mut capacity =
+            BUCKET_LEN - self.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
+        if capacity >= additional {
+            return;
+        }
+
+        let mut link_ptr = self.metadata.link.load(Acquire, guard);
+        while let Some(link) = link_ptr.as_ref() {
+            capacity += LINKED_BUCKET_LEN
+                - link.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
+            if capacity >= additional {
+                return;
+            }
+            link_ptr = link.metadata.link.load(Acquire, guard);
+        }
+
+        let additional_links = (additional - capacity).div_ceil(LINKED_BUCKET_LEN);
+        for _ in 0..additional_links {
+            let head = self.metadata.link.get_shared(Relaxed, guard);
+            let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
+            if let Some(head) = link.metadata.link.load(Relaxed, guard).as_ref() {
+                head.prev_link.store(link.as_ptr().cast_mut(), Relaxed);
+            }
+            self.metadata.link.swap((Some(link), Tag::None), Release);
+        }
+    }
+
     /// Extracts an entry from the given bucket and inserts the entry into itself.
     pub(crate) fn extract_from<'g>(
         &self,
@@ -363,67 +394,40 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             data_block,
             hash,
             || {
-                // Stack unwinding during a call to `insert` will result in the entry being
-                // removed from the map, any map entry modification should take place after all
-                // the memory is reserved.
-                if TYPE == INDEX {
-                    // Copy the data without modifying the original entry.
-                    if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
-                        Self::read_data_block(&link.data_block, from_entry_ptr.current_index)
-                    } else {
-                        Self::read_data_block(from_data_block, from_entry_ptr.current_index)
-                    }
-                } else if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
-                    let mut occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
-                    debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
-
-                    occupied_bitmap &= !(1_u32 << from_entry_ptr.current_index);
-                    link.metadata
-                        .occupied_bitmap
-                        .store(occupied_bitmap, Relaxed);
-                    let extracted =
-                        Self::read_data_block(&link.data_block, from_entry_ptr.current_index);
-                    if occupied_bitmap == 0 {
-                        from_entry_ptr.unlink(from_writer, link, guard);
-                    }
-                    extracted
+                // Copy the data without modifying the original entry.
+                if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
+                    Self::read_data_block(&link.data_block, from_entry_ptr.current_index)
                 } else {
-                    let occupied_bitmap = from_writer.metadata.occupied_bitmap.load(Relaxed);
-                    debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
-
-                    from_writer.metadata.occupied_bitmap.store(
-                        occupied_bitmap & !(1_u32 << from_entry_ptr.current_index),
-                        Relaxed,
-                    );
                     Self::read_data_block(from_data_block, from_entry_ptr.current_index)
                 }
             },
             guard,
         );
 
-        if TYPE == INDEX {
-            // Post-processing to unmark the entry to prevent the entry from being dropped.
-            if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
-                let mut occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
-                debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
-
-                occupied_bitmap &= !(1_u32 << from_entry_ptr.current_index);
-                link.metadata
-                    .occupied_bitmap
-                    .store(occupied_bitmap, Relaxed);
-            } else {
-                let occupied_bitmap = from_writer.metadata.occupied_bitmap.load(Relaxed);
-                debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
-
-                from_writer.metadata.occupied_bitmap.store(
-                    occupied_bitmap & !(1_u32 << from_entry_ptr.current_index),
-                    Relaxed,
-                );
-            }
-        }
+        // Remove the entry from the old bucket.
         from_writer
             .len
             .store(from_writer.len.load(Relaxed) - 1, Release);
+        if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
+            let mut occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
+            debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
+
+            occupied_bitmap &= !(1_u32 << from_entry_ptr.current_index);
+            link.metadata
+                .occupied_bitmap
+                .store(occupied_bitmap, Relaxed);
+            if TYPE != INDEX && occupied_bitmap == 0 {
+                from_entry_ptr.unlink(from_writer, link, guard);
+            }
+        } else {
+            let occupied_bitmap = from_writer.metadata.occupied_bitmap.load(Relaxed);
+            debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
+
+            from_writer.metadata.occupied_bitmap.store(
+                occupied_bitmap & !(1_u32 << from_entry_ptr.current_index),
+                Relaxed,
+            );
+        }
     }
 
     /// Drops entries in the [`DataBlock`] based on the metadata of the [`Bucket`].
