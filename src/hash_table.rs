@@ -536,6 +536,10 @@ where
 
                 let bucket = current_array.bucket(index);
                 if let Some(reader) = Reader::lock_async(bucket, sendable_guard).await {
+                    if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+                        // `current_array` is no longer the current one.
+                        break;
+                    }
                     let data_block = current_array.data_block(index);
                     if !f(reader, data_block) {
                         return;
@@ -544,6 +548,7 @@ where
                     // `current_array` is no longer the current one.
                     break;
                 }
+
                 start_index += 1;
             }
 
@@ -639,6 +644,10 @@ where
 
                 let bucket = current_array.bucket(index);
                 if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
+                    if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+                        // `current_array` is no longer the current one.
+                        break;
+                    }
                     let data_block = current_array.data_block(index);
                     let (stop, removed) = f(writer, data_block, index, current_array_len);
                     try_shrink |= removed;

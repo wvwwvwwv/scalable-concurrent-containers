@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.0.7
+
+* Fix a rare data race in `Hash*` iterator methods.
+
 3.0.5 - 3.0.6
 
 * Fix a potential duplicate key issue with `Hash*` containers if `HashMap::insert_*` fails to allocate memory.
