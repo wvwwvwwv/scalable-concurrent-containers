@@ -929,7 +929,6 @@ where
     pub(super) fn finish_split(&self) {
         let origin = self.split_op.reset();
         self.unlock();
-        self.wait_queue.signal();
         origin.map(Shared::release);
     }
 
