@@ -47,7 +47,7 @@ jobs:
           RUST_BACKTRACE=1 cargo test -p extended_tests
       - name: Release
         run: RUST_BACKTRACE=1 cargo test --release;
-          RUST_BACKTRACE=1 cargo test --release -p examples[]
+          RUST_BACKTRACE=1 cargo test --release -p examples
   check-extended:
     runs-on: ubuntu-latest
     timeout-minutes: 20
