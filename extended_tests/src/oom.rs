@@ -13,6 +13,7 @@ struct OOMAllocator;
 
 unsafe impl GlobalAlloc for OOMAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // This does not work nicely in the release mode.
         panic_if(|| rand::random::<u8>() % 3 == 0);
         unsafe { System.alloc(layout) }
     }
@@ -216,7 +217,6 @@ fn treeindex_panic_oom_2(repeat: usize) {
     wait_cleanup();
 }
 
-#[allow(clippy::too_many_lines)]
 #[cfg_attr(miri, ignore)]
 #[test]
 fn oom_panic_safety() {
