@@ -13,7 +13,7 @@ categories = ["asynchronous", "caching", "concurrency", "data-structures"]
 keywords = ["async", "cache", "concurrent", "hashmap", "tree"]
 
 [workspace]
-members = [".", "examples"]
+members = [".", "examples", "extended_tests"]
 
 [dependencies]
 equivalent = { version = "1.0", optional = true }
@@ -29,7 +29,6 @@ loom = ["dep:loom", "sdd/loom"]
 criterion = "0.7"
 futures = "0.3"
 proptest = "1.7"
-rand = "0.9"
 serde_test = "1.0"
 static_assertions = "1.1"
 tokio = { version = "1.47", features = ["full"] }

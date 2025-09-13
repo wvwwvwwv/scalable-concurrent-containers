@@ -43,10 +43,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: Debug
         run: RUST_BACKTRACE=1 cargo test;
-          RUST_BACKTRACE=1 cargo test -p examples
+          RUST_BACKTRACE=1 cargo test -p examples;
+          RUST_BACKTRACE=1 cargo test -p extended_tests
       - name: Release
         run: RUST_BACKTRACE=1 cargo test --release;
-          RUST_BACKTRACE=1 cargo test --release -p examples
+          RUST_BACKTRACE=1 cargo test --release -p examples;
+          RUST_BACKTRACE=1 cargo test --release -p extended_tests
   check-extended:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -74,14 +76,16 @@ jobs:
           tool: cargo-msrv, cargo-spellcheck
       - name: Clippy
         run: cargo clippy --all;
-          cargo clippy -p examples --all
+          cargo clippy -p examples --all;
+          cargo clippy -p extended_tests --all
       - name: MSRV
         run: cargo msrv verify
       - name: Spell-check
         run: cargo spellcheck check
       - name: Format
         run: cargo fmt --check;
-          cargo fmt -p examples --check
+          cargo fmt -p examples --check;
+          cargo fmt -p extended_tests --check
       - name: Doc
         run: cargo doc --document-private-items
       - name: Equivalent
@@ -91,7 +95,8 @@ jobs:
           cargo test --release serde --features serde
       - name: Nightly
         run: cargo +nightly test --release benchmark;
-          cargo +nightly test -p examples --release
+          cargo +nightly test -p examples --release;
+          cargo +nightly test -p extended_tests --release
   benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 15

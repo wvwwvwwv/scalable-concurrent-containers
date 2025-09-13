@@ -1,0 +1,12 @@
+[package]
+name = "extended_tests"
+version = "0.0.1"
+authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
+edition = "2024"
+
+[dependencies]
+scc = { path = ".."}
+sdd = "4.0"
+
+[dev-dependencies]
+rand = "0.9"

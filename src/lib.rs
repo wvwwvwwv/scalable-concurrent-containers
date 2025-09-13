@@ -1,5 +1,6 @@
 #![deny(missing_docs, warnings, clippy::all, clippy::pedantic)]
 #![doc = include_str!("../README.md")]
+#![cfg_attr(test, feature(thread_local))]
 
 pub mod bag;
 pub use bag::Bag;
