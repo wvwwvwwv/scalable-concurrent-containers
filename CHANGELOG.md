@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.1.0
+
+* Optimize stack memory usage of asynchronous `Hash*` methods: [#194](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/194).
+
 3.0.7
 
 * Fix a rare data race in `Hash*` iterator methods.

@@ -390,6 +390,8 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         from_entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
         guard: &'g Guard,
     ) {
+        debug_assert!(self.rw_lock.is_locked(Relaxed));
+
         self.insert_with(
             data_block,
             hash,
