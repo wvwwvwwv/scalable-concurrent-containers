@@ -770,13 +770,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
         bucket: &'g Bucket<K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
     ) -> Option<Writer<'g, K, V, L, TYPE>> {
-        // `sendable_guard` should be reset when there is a chance that the task may suspend, since
-        // `Guard` cannot survive across awaits.
-        if bucket
-            .rw_lock
-            .lock_async_with(|| sendable_guard.reset())
-            .await
-        {
+        if sendable_guard.lock(&bucket.rw_lock, true).await {
             // The `bucket` was not killed, and will not be killed until the `Writer` is dropped.
             // This guarantees that the `BucketArray` will survive as long as the `Writer` is alive.
             Some(Writer { bucket })
@@ -872,13 +866,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
         bucket: &'g Bucket<K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
     ) -> Option<Reader<'g, K, V, L, TYPE>> {
-        // `sendable_guard` should be reset when there is a chance that the task may suspend, since
-        // `Guard` cannot survive across awaits.
-        if bucket
-            .rw_lock
-            .share_async_with(|| sendable_guard.reset())
-            .await
-        {
+        if sendable_guard.lock(&bucket.rw_lock, false).await {
             // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
             // This guarantees that the `BucketArray` will survive as long as the `Reader` is alive.
             Some(Reader { bucket })

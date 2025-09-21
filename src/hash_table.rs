@@ -13,7 +13,7 @@ use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
 use super::exit_guard::ExitGuard;
-use crate::async_helper::SendableGuard;
+use crate::async_helper::{AsyncPager, SendableGuard};
 
 /// The maximum resize factor.
 const MAX_RESIZE_FACTOR: usize = (usize::BITS / 2) as usize;
@@ -856,7 +856,7 @@ where
                         // Bucket array validation failed.
                         return false;
                     }
-                } else if !sendable_guard.is_valid() {
+                } else if !sendable_guard.has_guard() {
                     // The bucket was killed and the guard has been invalidated. Validating the
                     // reference is not sufficient in this case since the current bucket array could
                     // have been replaced with a new one.
@@ -1031,6 +1031,9 @@ where
         old_writer: &Writer<'_, K, V, L, TYPE>,
         guard: &Guard,
     ) {
+        // Need to pre-allocate slots if the container is shrinking or the old bucket overflows.
+        let pre_allocate_slots =
+            old_array.len() >= current_array.len() || old_writer.len() > BUCKET_LEN;
         let mut distribution = [0_u32; MAX_RESIZE_FACTOR];
         let mut rehash_data = [[(0_u8, 0_u8); BUCKET_LEN]; 2];
         let mut extended = Vec::new();
@@ -1054,13 +1057,31 @@ where
                 #[allow(clippy::cast_possible_truncation)]
                 ((new_index - target_index) as u8, hash as u8)
             };
-            if position < BUCKET_LEN * 2 {
-                rehash_data[position / BUCKET_LEN][position % BUCKET_LEN] = (index, partial_hash);
-                position += 1;
+
+            if pre_allocate_slots {
+                if position < BUCKET_LEN * 2 {
+                    rehash_data[position / BUCKET_LEN][position % BUCKET_LEN] =
+                        (index, partial_hash);
+                    position += 1;
+                } else {
+                    extended.push((index, partial_hash));
+                }
+                distribution[usize::from(index)] += 1;
             } else {
-                extended.push((index, partial_hash));
+                let bucket = current_array.bucket(target_index + usize::from(index));
+                bucket.extract_from(
+                    current_array.data_block(target_index + usize::from(index)),
+                    u64::from(partial_hash),
+                    old_writer,
+                    old_data_block,
+                    &mut entry_ptr,
+                    guard,
+                );
             }
-            distribution[usize::from(index)] += 1;
+        }
+
+        if !pre_allocate_slots {
+            return;
         }
 
         // Allocate memory.
@@ -1437,7 +1458,7 @@ where
             mutex_guard.replace(unsafe {
                 Shared::new_unchecked(BucketArray::<K, V, L, TYPE>::new(
                     new_capacity,
-                    self.bucket_array().clone(Relaxed, guard),
+                    (*self.bucket_array()).clone(Relaxed, guard),
                 ))
             });
         }
@@ -1530,7 +1551,8 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
         }
 
         let try_shrink = self.writer.len() == 0;
-        let sendable_guard = SendableGuard::default();
+        let async_pager = AsyncPager::default();
+        let sendable_guard = SendableGuard::new(&async_pager);
         let next_index = self.index + 1;
         let len = self.len;
         drop(self);
