@@ -1480,7 +1480,7 @@ mod hashindex {
         let num_iter = if cfg!(miri) { 2 } else { 64 };
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..num_iter {
-            let num_threads = if cfg!(miri) { 2 } else { 8 };
+            let num_threads = if cfg!(miri) { 3 } else { 8 };
             let workload_size = 256;
             let mut threads = Vec::with_capacity(num_threads);
             let barrier = Arc::new(Barrier::new(num_threads));
