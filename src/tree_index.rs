@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 use std::panic::UnwindSafe;
-use std::pin::Pin;
+use std::pin::pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
 
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
@@ -177,16 +177,14 @@ where
     /// ```
     #[inline]
     pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
+        let mut pinned_async_wait = pin!(AsyncWait::default());
         let mut new_root = None;
         loop {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
-
             let need_await = {
                 let guard = Guard::new();
                 let root_ptr = self.root.load(Acquire, &guard);
                 if let Some(root_ref) = root_ptr.as_ref() {
-                    match root_ref.insert(key, val, &mut async_wait_pinned, &guard) {
+                    match root_ref.insert(key, val, &mut pinned_async_wait, &guard) {
                         Ok(r) => match r {
                             InsertResult::Success => return Ok(()),
                             InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
@@ -205,7 +203,7 @@ where
                             InsertResult::Retired(k, v) => {
                                 key = k;
                                 val = v;
-                                !Node::cleanup_root(&self.root, &mut async_wait_pinned, &guard)
+                                !Node::cleanup_root(&self.root, &mut pinned_async_wait, &guard)
                             }
                         },
                         Err((k, v)) => {
@@ -220,7 +218,7 @@ where
             };
 
             if need_await {
-                async_wait_pinned.await;
+                pinned_async_wait.wait().await;
             }
 
             let node = if let Some(new_root) = new_root.take() {
@@ -375,17 +373,16 @@ where
     where
         Q: Comparable<K> + ?Sized,
     {
+        let mut pinned_async_wait = pin!(AsyncWait::default());
         let mut removed = false;
         loop {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let guard = Guard::new();
                 if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
                     if let Ok(result) = root_ref.remove_if::<_, _, _>(
                         key,
                         &mut condition,
-                        &mut async_wait_pinned,
+                        &mut pinned_async_wait,
                         &guard,
                     ) {
                         if matches!(result, RemoveResult::Cleanup) {
@@ -394,7 +391,7 @@ where
                         match result {
                             RemoveResult::Success => return true,
                             RemoveResult::Cleanup | RemoveResult::Retired => {
-                                if Node::cleanup_root(&self.root, &mut async_wait_pinned, &guard) {
+                                if Node::cleanup_root(&self.root, &mut pinned_async_wait, &guard) {
                                     return true;
                                 }
                                 removed = true;
@@ -403,7 +400,7 @@ where
                                 if removed {
                                     if Node::cleanup_root(
                                         &self.root,
-                                        &mut async_wait_pinned,
+                                        &mut pinned_async_wait,
                                         &guard,
                                     ) {
                                         return true;
@@ -419,7 +416,7 @@ where
                     return removed;
                 }
             }
-            async_wait_pinned.await;
+            pinned_async_wait.wait().await;
         }
     }
 
@@ -510,11 +507,10 @@ where
     where
         Q: Comparable<K> + ?Sized,
     {
+        let mut pinned_async_wait = pin!(AsyncWait::default());
         let start_unbounded = matches!(range.start_bound(), Unbounded);
 
         loop {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let guard = Guard::new();
 
@@ -527,11 +523,11 @@ where
                         start_unbounded,
                         None,
                         None,
-                        &mut async_wait_pinned,
+                        &mut pinned_async_wait,
                         &guard,
                     ) {
                         if num_children >= 2
-                            || Node::cleanup_root(&self.root, &mut async_wait_pinned, &guard)
+                            || Node::cleanup_root(&self.root, &mut pinned_async_wait, &guard)
                         {
                             // Completed removal and cleaning up the root.
                             return;
@@ -542,7 +538,7 @@ where
                     return;
                 }
             }
-            async_wait_pinned.await;
+            pinned_async_wait.wait().await;
         }
     }
 

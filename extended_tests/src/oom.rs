@@ -14,7 +14,7 @@ struct OOMAllocator;
 unsafe impl GlobalAlloc for OOMAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // This does not work nicely in the release mode.
-        panic_if(|| rand::random::<u8>() % 3 == 0);
+        panic_if(|| rand::random::<u8>().is_multiple_of(3));
         unsafe { System.alloc(layout) }
     }
 
@@ -75,7 +75,7 @@ impl Clone for R {
 impl Drop for R {
     fn drop(&mut self) {
         self.0.0.fetch_sub(1, AcqRel);
-        panic_if(|| !self.0.1 && rand::random::<u8>() % 11 == 0);
+        panic_if(|| !self.0.1 && rand::random::<u8>().is_multiple_of(11));
     }
 }
 

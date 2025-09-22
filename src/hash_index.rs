@@ -6,6 +6,7 @@ use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
 use std::ops::{Deref, RangeInclusive};
 use std::panic::UnwindSafe;
+use std::pin::pin;
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
@@ -16,7 +17,7 @@ use super::Equivalent;
 use super::hash_table::bucket::{Bucket, EntryPtr, INDEX};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
-use crate::async_helper::SendableGuard;
+use crate::async_helper::{AsyncPager, SendableGuard};
 
 /// Scalable concurrent hash index.
 ///
@@ -254,8 +255,10 @@ where
     /// ```
     #[inline]
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
+        let async_pager = pin!(AsyncPager::default());
+        let sendable_guard = SendableGuard::new(&async_pager);
         let hash = self.hash(&key);
-        let sendable_guard = SendableGuard::default();
+
         self.writer_async(hash, &sendable_guard, |writer, data_block, index, len| {
             let guard = sendable_guard.guard();
             let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, guard);
@@ -421,8 +424,10 @@ where
         &self,
         mut pred: P,
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
+        let async_pager = pin!(AsyncPager::default());
+        let sendable_guard = SendableGuard::new(&async_pager);
         let mut entry = None;
-        let sendable_guard = SendableGuard::default();
+
         self.for_each_writer_async(0, 0, &sendable_guard, |writer, data_block, index, len| {
             let guard = sendable_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
@@ -507,8 +512,10 @@ where
     /// ```
     #[inline]
     pub async fn insert_async(&self, key: K, val: V) -> Result<(), (K, V)> {
+        let async_pager = pin!(AsyncPager::default());
+        let sendable_guard = SendableGuard::new(&async_pager);
         let hash = self.hash(&key);
-        let sendable_guard = SendableGuard::default();
+
         self.writer_async(hash, &sendable_guard, |writer, data_block, _, _| {
             let guard = sendable_guard.guard();
             let partial_hash = hash;
@@ -634,8 +641,10 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        let async_pager = pin!(AsyncPager::default());
+        let sendable_guard = SendableGuard::new(&async_pager);
         let hash = self.hash(key);
-        let sendable_guard = SendableGuard::default();
+
         self.optional_writer_async(hash, &sendable_guard, |writer, data_block, _, _| {
             let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, sendable_guard.guard());
             if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
@@ -709,8 +718,10 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        let async_pager = pin!(AsyncPager::default());
+        let sendable_guard = SendableGuard::new(&async_pager);
         let hash = self.hash(key);
-        let sendable_guard = SendableGuard::default();
+
         self.optional_writer_async(hash, &sendable_guard, |writer, data_block, index, len| {
             let guard = sendable_guard.guard();
             let entry_ptr = writer.get_entry_ptr(data_block, key, hash, guard);
@@ -897,8 +908,10 @@ where
     /// ```
     #[inline]
     pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+        let async_pager = pin!(AsyncPager::default());
+        let sendable_guard = SendableGuard::new(&async_pager);
         let mut result = true;
-        let sendable_guard = SendableGuard::default();
+
         self.for_each_reader_async(&sendable_guard, |reader, data_block| {
             let guard = sendable_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
@@ -975,7 +988,9 @@ where
     /// ```
     #[inline]
     pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
-        let sendable_guard = SendableGuard::default();
+        let async_pager = pin!(AsyncPager::default());
+        let sendable_guard = SendableGuard::new(&async_pager);
+
         self.for_each_writer_async(0, 0, &sendable_guard, |writer, data_block, _, _| {
             let mut removed = false;
             let guard = sendable_guard.guard();

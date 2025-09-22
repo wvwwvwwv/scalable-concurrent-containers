@@ -15,11 +15,16 @@ mod hashmap {
     use proptest::test_runner::TestRunner;
     use tokio::sync::Barrier as AsyncBarrier;
 
-    use crate::async_helper::SendableGuard;
+    use crate::async_helper::{AsyncPager, SendableGuard};
     use crate::hash_map::{self, Entry, Reserve};
+    use crate::hash_table::bucket::{MAP, Writer};
     use crate::{Equivalent, HashMap};
 
+    static_assertions::assert_eq_size!(Option<Writer<usize, usize, (), MAP>>, usize);
     static_assertions::assert_impl_all!(SendableGuard: Send, Sync);
+    static_assertions::assert_eq_size!(SendableGuard, (usize, usize));
+    static_assertions::assert_not_impl_any!(AsyncPager: Unpin);
+    static_assertions::assert_eq_size!(AsyncPager, [u64; 16]);
     static_assertions::assert_not_impl_any!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_map::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, RefUnwindSafe, UnwindSafe);
@@ -113,6 +118,21 @@ mod hashmap {
         );
         assert!(!hashmap.contains_sync("NO"));
         assert!(hashmap.contains_sync("HELLO"));
+    }
+
+    #[test]
+    fn future_size() {
+        let hashmap: HashMap<usize, usize> = HashMap::default();
+        let insert_size = size_of_val(&hashmap.insert_async(0, 0));
+        assert!(insert_size < 900, "{insert_size}");
+        let entry_size = size_of_val(&hashmap.entry_async(0));
+        assert!(entry_size < 900, "{entry_size}");
+        let read_size = size_of_val(&hashmap.read_async(&0, |_, _| {}));
+        assert!(read_size < 900, "{read_size}");
+        let remove_size = size_of_val(&hashmap.remove_async(&0));
+        assert!(remove_size < 900, "{remove_size}");
+        let iter_size = size_of_val(&hashmap.iter_async(|_, _| true));
+        assert!(iter_size < 900, "{iter_size}");
     }
 
     #[cfg_attr(miri, ignore)]
@@ -1460,7 +1480,7 @@ mod hashindex {
         let num_iter = if cfg!(miri) { 2 } else { 64 };
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..num_iter {
-            let num_threads = if cfg!(miri) { 2 } else { 8 };
+            let num_threads = if cfg!(miri) { 3 } else { 8 };
             let workload_size = 256;
             let mut threads = Vec::with_capacity(num_threads);
             let barrier = Arc::new(Barrier::new(num_threads));

@@ -390,6 +390,8 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         from_entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
         guard: &'g Guard,
     ) {
+        debug_assert!(self.rw_lock.is_locked(Relaxed));
+
         self.insert_with(
             data_block,
             hash,
@@ -768,13 +770,11 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
         bucket: &'g Bucket<K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
     ) -> Option<Writer<'g, K, V, L, TYPE>> {
-        // `sendable_guard` should be reset when there is a chance that the task may suspend, since
-        // `Guard` cannot survive across awaits.
-        if bucket
-            .rw_lock
-            .lock_async_with(|| sendable_guard.reset())
-            .await
-        {
+        if bucket.rw_lock.try_lock() {
+            Some(Writer { bucket })
+        } else if bucket.rw_lock.is_poisoned(Acquire) {
+            None
+        } else if sendable_guard.wait_acquire(&bucket.rw_lock, true).await {
             // The `bucket` was not killed, and will not be killed until the `Writer` is dropped.
             // This guarantees that the `BucketArray` will survive as long as the `Writer` is alive.
             Some(Writer { bucket })
@@ -870,13 +870,11 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
         bucket: &'g Bucket<K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
     ) -> Option<Reader<'g, K, V, L, TYPE>> {
-        // `sendable_guard` should be reset when there is a chance that the task may suspend, since
-        // `Guard` cannot survive across awaits.
-        if bucket
-            .rw_lock
-            .share_async_with(|| sendable_guard.reset())
-            .await
-        {
+        if bucket.rw_lock.try_share() {
+            Some(Reader { bucket })
+        } else if bucket.rw_lock.is_poisoned(Acquire) {
+            None
+        } else if sendable_guard.wait_acquire(&bucket.rw_lock, false).await {
             // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
             // This guarantees that the `BucketArray` will survive as long as the `Reader` is alive.
             Some(Reader { bucket })

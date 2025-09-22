@@ -2,6 +2,7 @@ pub mod bucket;
 pub mod bucket_array;
 
 use std::hash::{BuildHasher, Hash};
+use std::mem::forget;
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -12,7 +13,7 @@ use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
 use super::exit_guard::ExitGuard;
-use crate::async_helper::SendableGuard;
+use crate::async_helper::{AsyncPager, SendableGuard};
 
 /// The maximum resize factor.
 const MAX_RESIZE_FACTOR: usize = (usize::BITS / 2) as usize;
@@ -248,7 +249,9 @@ where
         while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if !self.dedup_bucket_sync::<true>(current_array, old_array, index, guard) {
+                if !self.incremental_rehash_sync::<true>(current_array, guard)
+                    && !self.dedup_bucket_sync::<true>(current_array, old_array, index, guard)
+                {
                     let index = old_array.calculate_bucket_index(hash);
                     if let Some(entry) = old_array.bucket(index).search_entry(
                         old_array.data_block(index),
@@ -294,12 +297,15 @@ where
     {
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
-            if current_array.has_old_array()
-                && !self
+            if current_array.has_old_array() {
+                self.incremental_rehash_async(current_array, sendable_guard)
+                    .await;
+                if !self
                     .dedup_bucket_async(current_array, index, sendable_guard)
                     .await
-            {
-                continue;
+                {
+                    continue;
+                }
             }
 
             let bucket = current_array.bucket(index);
@@ -334,7 +340,9 @@ where
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                if !self.incremental_rehash_sync::<false>(current_array, guard) {
+                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                }
             }
 
             let bucket = current_array.bucket(index);
@@ -361,12 +369,15 @@ where
         loop {
             let current_array = self.get_or_create_bucket_array(sendable_guard.guard());
             let index = current_array.calculate_bucket_index(hash);
-            if current_array.has_old_array()
-                && !self
+            if current_array.has_old_array() {
+                self.incremental_rehash_async(current_array, sendable_guard)
+                    .await;
+                if !self
                     .dedup_bucket_async(current_array, index, sendable_guard)
                     .await
-            {
-                continue;
+                {
+                    continue;
+                }
             }
 
             let bucket = current_array.bucket(index);
@@ -400,7 +411,9 @@ where
             let current_array = self.get_or_create_bucket_array(guard);
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                if !self.incremental_rehash_sync::<false>(current_array, guard) {
+                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                }
             }
 
             let bucket = current_array.bucket(index);
@@ -439,12 +452,15 @@ where
     {
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
-            if current_array.has_old_array()
-                && !self
+            if current_array.has_old_array() {
+                self.incremental_rehash_async(current_array, sendable_guard)
+                    .await;
+                if !self
                     .dedup_bucket_async(current_array, index, sendable_guard)
                     .await
-            {
-                continue;
+                {
+                    continue;
+                }
             }
 
             let bucket = current_array.bucket(index);
@@ -482,7 +498,9 @@ where
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                if !self.incremental_rehash_sync::<false>(current_array, guard) {
+                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                }
             }
 
             let bucket = current_array.bucket(index);
@@ -524,14 +542,17 @@ where
 
             while start_index < current_array.len() {
                 let index = start_index;
-                if current_array.has_old_array()
-                    && !self
+                if current_array.has_old_array() {
+                    self.incremental_rehash_async(current_array, sendable_guard)
+                        .await;
+                    if !self
                         .dedup_bucket_async(current_array, index, sendable_guard)
                         .await
-                {
-                    // Retry the operation since there is a possibility that the current bucket
-                    // array was replaced by a new one.
-                    break;
+                    {
+                        // Retry the operation since there is a possibility that the current bucket
+                        // array was replaced by a new one.
+                        break;
+                    }
                 }
 
                 let bucket = current_array.bucket(index);
@@ -581,7 +602,9 @@ where
             while start_index < current_array.len() {
                 let index = start_index;
                 if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                    if !self.incremental_rehash_sync::<false>(current_array, guard) {
+                        self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                    }
                 }
 
                 let bucket = current_array.bucket(index);
@@ -632,14 +655,17 @@ where
 
             while start_index < current_array_len {
                 let index = start_index;
-                if current_array.has_old_array()
-                    && !self
+                if current_array.has_old_array() {
+                    self.incremental_rehash_async(current_array, sendable_guard)
+                        .await;
+                    if !self
                         .dedup_bucket_async(current_array, index, sendable_guard)
                         .await
-                {
-                    // Retry the operation since there is a possibility that the current bucket
-                    // array was replaced by a new one.
-                    break;
+                    {
+                        // Retry the operation since there is a possibility that the current bucket
+                        // array was replaced by a new one.
+                        break;
+                    }
                 }
 
                 let bucket = current_array.bucket(index);
@@ -705,7 +731,9 @@ where
             while start_index < current_array_len {
                 let index = start_index;
                 if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                    if !self.incremental_rehash_sync::<false>(current_array, guard) {
+                        self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                    }
                 }
 
                 let bucket = current_array.bucket(index);
@@ -753,7 +781,9 @@ where
             let current_array = self.get_or_create_bucket_array(guard);
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if !self.dedup_bucket_sync::<true>(current_array, old_array, index, guard) {
+                if !self.incremental_rehash_sync::<true>(current_array, guard)
+                    && !self.dedup_bucket_sync::<true>(current_array, old_array, index, guard)
+                {
                     return None;
                 }
             }
@@ -802,9 +832,6 @@ where
         index: usize,
         sendable_guard: &'g SendableGuard,
     ) -> bool {
-        self.incremental_rehash_async(current_array, sendable_guard)
-            .await;
-
         if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
             // A new bucket array was created in the meantime.
             return false;
@@ -829,7 +856,7 @@ where
                         // Bucket array validation failed.
                         return false;
                     }
-                } else if !sendable_guard.is_valid() {
+                } else if !sendable_guard.has_guard() {
                     // The bucket was killed and the guard has been invalidated. Validating the
                     // reference is not sufficient in this case since the current bucket array could
                     // have been replaced with a new one.
@@ -856,9 +883,6 @@ where
         index: usize,
         guard: &'g Guard,
     ) -> bool {
-        if self.incremental_rehash_sync::<TRY_LOCK>(current_array, guard) {
-            return true;
-        }
         let range = Self::from_index_to_range(current_array.len(), old_array.len(), index);
         for old_index in range.0..range.1 {
             let bucket = old_array.bucket(old_index);
@@ -902,80 +926,34 @@ where
             return validated;
         }
 
-        let target_index =
-            Self::from_index_to_range(old_array.len(), current_array.len(), old_index).0;
-        let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
-            Default::default();
-        let mut distribution = [0_u32; MAX_RESIZE_FACTOR];
-        let mut rehash_data = [[(0_u8, 0_u8); BUCKET_LEN]; 2];
-        let mut extended = Vec::new();
-        let old_data_block = old_array.data_block(old_index);
+        let (target_index, end_target_index) =
+            Self::from_index_to_range(old_array.len(), current_array.len(), old_index);
 
-        // Collect data for relocation.
-        let mut entry_ptr = EntryPtr::new(sendable_guard.guard());
-        let mut position = 0;
-        while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
-            let old_entry = entry_ptr.get(old_data_block);
-            let (index, partial_hash) = if old_array.len() >= current_array.len() {
-                debug_assert_eq!(
-                    current_array.calculate_bucket_index(self.hash(&old_entry.0)),
-                    target_index
-                );
-                (0_u8, entry_ptr.partial_hash(&*old_writer))
-            } else {
-                let hash = self.hash(&old_entry.0);
-                let new_index = current_array.calculate_bucket_index(hash);
-                debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                #[allow(clippy::cast_possible_truncation)]
-                ((new_index - target_index) as u8, hash as u8)
-            };
-            if position < BUCKET_LEN * 2 {
-                rehash_data[position / BUCKET_LEN][position % BUCKET_LEN] = (index, partial_hash);
-                position += 1;
-            } else {
-                extended.push((index, partial_hash));
-            }
-            distribution[usize::from(index)] += 1;
-        }
-
-        // Allocate memory and lock the target bucket..
-        for (i, d) in distribution.iter().enumerate() {
-            if *d != 0 {
-                let bucket = current_array.bucket(target_index + i);
-                let writer = unsafe {
-                    Writer::lock_async(bucket, sendable_guard)
-                        .await
-                        .unwrap_unchecked()
-                };
-                writer.reserve_slots((*d) as usize, sendable_guard.guard());
-                target_buckets[i].replace(writer);
-            }
-        }
-
-        // Relocate entries; it is infallible.
-        entry_ptr = EntryPtr::new(sendable_guard.guard());
-        position = 0;
-        while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
-            let (index, partial_hash) = if position < BUCKET_LEN * 2 {
-                rehash_data[position / BUCKET_LEN][position % BUCKET_LEN]
-            } else {
-                extended[position - BUCKET_LEN * 2]
-            };
-            let target_bucket = unsafe {
-                target_buckets[usize::from(index)]
-                    .as_mut()
+        // Lock the target buckets.
+        for i in target_index..end_target_index {
+            let writer = unsafe {
+                Writer::lock_async(current_array.bucket(i), sendable_guard)
+                    .await
                     .unwrap_unchecked()
             };
-            target_bucket.extract_from(
-                current_array.data_block(target_index + usize::from(index)),
-                u64::from(partial_hash),
-                &old_writer,
-                old_data_block,
-                &mut entry_ptr,
-                sendable_guard.guard(),
-            );
-            position += 1;
+            forget(writer);
         }
+        let unlock = ExitGuard::new((), |()| {
+            for i in target_index..end_target_index {
+                let writer = Writer::from_bucket(current_array.bucket(i));
+                drop(writer);
+            }
+        });
+
+        self.relocate_bucket(
+            current_array,
+            target_index,
+            old_array,
+            old_index,
+            &old_writer,
+            sendable_guard.guard(),
+        );
+        drop(unlock);
 
         // Validate the reference before killing the bucket.
         let validated = sendable_guard.check_ref(self.bucket_array(), current_array, Acquire);
@@ -999,10 +977,63 @@ where
             return true;
         }
 
-        let target_index =
-            Self::from_index_to_range(old_array.len(), current_array.len(), old_index).0;
-        let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
-            Default::default();
+        let (target_index, end_target_index) =
+            Self::from_index_to_range(old_array.len(), current_array.len(), old_index);
+
+        // Lock the target buckets.
+        for i in target_index..end_target_index {
+            if TRY_LOCK {
+                let Ok(Some(writer)) = Writer::try_lock(current_array.bucket(i)) else {
+                    for j in target_index..i {
+                        let writer = Writer::from_bucket(current_array.bucket(j));
+                        drop(writer);
+                    }
+                    return false;
+                };
+                forget(writer);
+            } else {
+                let writer =
+                    unsafe { Writer::lock_sync(current_array.bucket(i)).unwrap_unchecked() };
+                forget(writer);
+            }
+        }
+        let unlock = ExitGuard::new((), |()| {
+            for i in target_index..end_target_index {
+                let writer = Writer::from_bucket(current_array.bucket(i));
+                drop(writer);
+            }
+        });
+
+        self.relocate_bucket(
+            current_array,
+            target_index,
+            old_array,
+            old_index,
+            &old_writer,
+            guard,
+        );
+        drop(unlock);
+
+        old_writer.kill();
+        true
+    }
+
+    /// Relocates entries from the old bucket to the corresponding buckets in the current bucket
+    /// array.
+    ///
+    /// This assumes that all the target buckets are locked.
+    fn relocate_bucket(
+        &self,
+        current_array: &BucketArray<K, V, L, TYPE>,
+        target_index: usize,
+        old_array: &BucketArray<K, V, L, TYPE>,
+        old_index: usize,
+        old_writer: &Writer<'_, K, V, L, TYPE>,
+        guard: &Guard,
+    ) {
+        // Need to pre-allocate slots if the container is shrinking or the old bucket overflows.
+        let pre_allocate_slots =
+            old_array.len() >= current_array.len() || old_writer.len() > BUCKET_LEN;
         let mut distribution = [0_u32; MAX_RESIZE_FACTOR];
         let mut rehash_data = [[(0_u8, 0_u8); BUCKET_LEN]; 2];
         let mut extended = Vec::new();
@@ -1011,14 +1042,14 @@ where
         // Collect data for relocation.
         let mut entry_ptr = EntryPtr::new(guard);
         let mut position = 0;
-        while entry_ptr.move_to_next(&old_writer, guard) {
+        while entry_ptr.move_to_next(old_writer, guard) {
             let old_entry = entry_ptr.get(old_data_block);
             let (index, partial_hash) = if old_array.len() >= current_array.len() {
                 debug_assert_eq!(
                     current_array.calculate_bucket_index(self.hash(&old_entry.0)),
                     target_index
                 );
-                (0_u8, entry_ptr.partial_hash(&*old_writer))
+                (0_u8, entry_ptr.partial_hash(&**old_writer))
             } else {
                 let hash = self.hash(&old_entry.0);
                 let new_index = current_array.calculate_bucket_index(hash);
@@ -1026,62 +1057,62 @@ where
                 #[allow(clippy::cast_possible_truncation)]
                 ((new_index - target_index) as u8, hash as u8)
             };
-            if position < BUCKET_LEN * 2 {
-                rehash_data[position / BUCKET_LEN][position % BUCKET_LEN] = (index, partial_hash);
-                position += 1;
+
+            if pre_allocate_slots {
+                if position < BUCKET_LEN * 2 {
+                    rehash_data[position / BUCKET_LEN][position % BUCKET_LEN] =
+                        (index, partial_hash);
+                    position += 1;
+                } else {
+                    extended.push((index, partial_hash));
+                }
+                distribution[usize::from(index)] += 1;
             } else {
-                extended.push((index, partial_hash));
+                let bucket = current_array.bucket(target_index + usize::from(index));
+                bucket.extract_from(
+                    current_array.data_block(target_index + usize::from(index)),
+                    u64::from(partial_hash),
+                    old_writer,
+                    old_data_block,
+                    &mut entry_ptr,
+                    guard,
+                );
             }
-            distribution[usize::from(index)] += 1;
         }
 
-        // Allocate memory and lock the target bucket..
+        if !pre_allocate_slots {
+            return;
+        }
+
+        // Allocate memory.
         for (i, d) in distribution.iter().enumerate() {
             if *d != 0 {
                 let bucket = current_array.bucket(target_index + i);
-                let writer = if TRY_LOCK {
-                    let Ok(writer) = Writer::try_lock(bucket) else {
-                        return false;
-                    };
-                    writer
-                } else {
-                    Writer::lock_sync(bucket)
-                };
-                let writer = unsafe { writer.unwrap_unchecked() };
-                writer.reserve_slots((*d) as usize, guard);
-                target_buckets[i].replace(writer);
+                bucket.reserve_slots((*d) as usize, guard);
             }
         }
 
         // Relocate entries; it is infallible.
         entry_ptr = EntryPtr::new(guard);
         position = 0;
-        while entry_ptr.move_to_next(&old_writer, guard) {
+        while entry_ptr.move_to_next(old_writer, guard) {
             let (index, partial_hash) = if position < BUCKET_LEN * 2 {
                 rehash_data[position / BUCKET_LEN][position % BUCKET_LEN]
             } else {
                 extended[position - BUCKET_LEN * 2]
             };
-            let target_bucket = unsafe {
-                target_buckets[usize::from(index)]
-                    .as_mut()
-                    .unwrap_unchecked()
-            };
-            target_bucket.extract_from(
+            let bucket = current_array.bucket(target_index + usize::from(index));
+            bucket.extract_from(
                 current_array.data_block(target_index + usize::from(index)),
                 u64::from(partial_hash),
-                &old_writer,
+                old_writer,
                 old_data_block,
                 &mut entry_ptr,
                 guard,
             );
             position += 1;
         }
-
-        old_writer.kill();
-        true
     }
-
     /// Starts incremental rehashing.
     #[inline]
     fn start_incremental_rehash(&self, old_array: &BucketArray<K, V, L, TYPE>) -> Option<usize> {
@@ -1336,7 +1367,7 @@ where
                 capacity
             } else {
                 let mut new_capacity = capacity;
-                while (new_capacity / 16) * 7 <= estimated_num_entries {
+                while new_capacity / 2 < estimated_num_entries {
                     // Double `new_capacity` until the expected load factor becomes ~0.43.
                     if new_capacity == self.maximum_capacity() {
                         break;
@@ -1398,7 +1429,7 @@ where
                     if writer.len() == 0 {
                         // The bucket will be unlocked later.
                         writer_guard.0 = i + 1;
-                        std::mem::forget(writer);
+                        forget(writer);
                         return false;
                     }
                 }
@@ -1427,7 +1458,7 @@ where
             mutex_guard.replace(unsafe {
                 Shared::new_unchecked(BucketArray::<K, V, L, TYPE>::new(
                     new_capacity,
-                    self.bucket_array().clone(Relaxed, guard),
+                    (*self.bucket_array()).clone(Relaxed, guard),
                 ))
             });
         }
@@ -1520,7 +1551,8 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
         }
 
         let try_shrink = self.writer.len() == 0;
-        let sendable_guard = SendableGuard::default();
+        let async_pager = AsyncPager::default();
+        let sendable_guard = SendableGuard::new(&async_pager);
         let next_index = self.index + 1;
         let len = self.len;
         drop(self);
