@@ -1,11 +1,9 @@
 use std::cell::UnsafeCell;
-use std::future::Future;
+use std::marker::PhantomPinned;
 use std::mem::ManuallyDrop;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
 use std::ptr;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::Ordering::Acquire;
-use std::task::{Context, Poll};
 
 use saa::lock::Mode as LockMode;
 use saa::{Gate, Lock, Pager};
@@ -16,15 +14,17 @@ use crate::exit_guard::ExitGuard;
 /// [`AsyncPager`] is used to reduce the size of asynchronous tasks.
 ///
 /// The alignment of [`Pager`] is 128 bytes that propagates all the other structs containing
-/// [`Pager`], bloating the size of the future of the stack. Therefore, a [`Pager`] needs to be
-/// managed by a separate, independent data structure.
+/// [`Pager`], bloating the future of the stack. Therefore, a [`Pager`] is managed by a separate,
+/// independent data structure instead of embedding it in [`SendableGuard`].
 #[derive(Debug, Default)]
 pub(crate) struct AsyncPager {
     /// [`Pager`] that enables asynchronous lock acquisition.
     ///
     /// [`Pager`] needs to be dropped before the [`Guard`], therefore manual lifetime management is
-    /// required.
+    /// required; [`SendableGuard`] manually drops the contained [`Pager`].
     pager: UnsafeCell<ManuallyDrop<Pager<'static, Lock>>>,
+    /// [`PhantomPinned`] is used to prevent the struct from being moved.
+    _pinned: PhantomPinned,
 }
 
 /// [`SendableGuard`] is used when an asynchronous task needs to be suspended without invalidating
@@ -36,7 +36,7 @@ pub(crate) struct SendableGuard {
     /// [`Guard`] that can be dropped without invalidating any references.
     guard: UnsafeCell<Option<Guard>>,
     /// Pinned [`AsyncPager`] that enables asynchronous lock acquisition.
-    pager: Pin<&'static AsyncPager>,
+    pager: &'static AsyncPager,
 }
 
 /// [`WaitQueue`] implements an unfair wait queue.
@@ -45,7 +45,7 @@ pub(crate) struct SendableGuard {
 /// protected by [`sdd`].
 #[derive(Debug, Default)]
 pub(crate) struct WaitQueue {
-    /// Gate to control access to resources.
+    /// [`Gate`] to control access to resources.
     gate: Gate,
 }
 
@@ -66,9 +66,7 @@ impl SendableGuard {
     pub(crate) fn new(async_pager: &AsyncPager) -> Self {
         Self {
             guard: UnsafeCell::new(None),
-            pager: Pin::new(unsafe {
-                std::mem::transmute::<&AsyncPager, &'static AsyncPager>(async_pager)
-            }),
+            pager: unsafe { std::mem::transmute::<&AsyncPager, &'static AsyncPager>(async_pager) },
         }
     }
 
@@ -78,31 +76,30 @@ impl SendableGuard {
         unsafe { (*self.guard.get()).is_some() }
     }
 
-    /// Acquires a write or read lock.
-    #[inline]
-    pub(crate) async fn lock<'l>(&self, lock: &'l Lock, writer: bool) -> bool {
-        if writer && lock.try_lock() {
-            return true;
-        }
-        if !writer && lock.try_share() {
-            return true;
-        }
-        if lock.is_poisoned(Acquire) {
-            return false;
-        }
-
+    /// Acquires a write or read lock after waiting for the lock to be available.
+    pub(crate) async fn wait_acquire<'l>(&self, lock: &'l Lock, writer: bool) -> bool {
         let mut unwind_guard = ExitGuard::new(true, |unwind| {
             if unwind {
                 // During unwinding the stack, a guard is needed.
+                //
+                // At this point, the pager is not registered and no guard is present in the stack,
+                // allowing anyone to drop the bucket array containing the lock. By instantiating a
+                // new guard, use-after-free can be prevented thanks to `SeqCst` operations when
+                // instantiating a new guard.
+                // - Case 1: drop-bucket-array -> this guard. When dropping the bucket array, the
+                //  lock must have been poisoned, so the pager already knows it.
+                // - Case 2: this guard -> drop-bucket-array. The dropped bucket array remains in
+                //  memory until the guard is dropped.
                 self.guard();
             }
         });
 
-        let mut pinned_pager = Pin::new(unsafe {
-            std::mem::transmute::<&mut Pager<'static, Lock>, &mut Pager<'l, Lock>>(
+        let mut pinned_pager = unsafe {
+            let pager_ref = std::mem::transmute::<&mut Pager<'static, Lock>, &mut Pager<'l, Lock>>(
                 &mut **self.pager.pager.get(),
-            )
-        });
+            );
+            Pin::new_unchecked(pager_ref)
+        };
         let lock_mode = if writer {
             LockMode::Exclusive
         } else {
@@ -114,7 +111,7 @@ impl SendableGuard {
         self.reset();
 
         // The pager is properly registered, therefore it will get a result unless cancelled.
-        let result = pinned_pager.await.ok().unwrap_or(false);
+        let result = pinned_pager.poll_async().await.ok().unwrap_or(false);
         *unwind_guard = false;
 
         result
@@ -177,8 +174,7 @@ impl WaitQueue {
             return f();
         }
 
-        let mut pager = Pager::default();
-        let mut pinned_pager = Pin::new(&mut pager);
+        let mut pinned_pager = pin!(Pager::default());
         self.gate.register_pager(&mut pinned_pager, true);
 
         let result = f();
@@ -198,11 +194,12 @@ impl WaitQueue {
         async_wait: &'w mut AsyncWait,
         f: F,
     ) -> Result<T, ()> {
-        let mut pinned_pager = Pin::new(unsafe {
-            std::mem::transmute::<&mut Pager<'static, Gate>, &mut Pager<'w, Gate>>(
+        let mut pinned_pager = unsafe {
+            let pager_ref = std::mem::transmute::<&mut Pager<'static, Gate>, &mut Pager<'w, Gate>>(
                 &mut async_wait.pager,
-            )
-        });
+            );
+            Pin::new_unchecked(pager_ref)
+        };
         self.gate.register_pager(&mut pinned_pager, false);
         if let Ok(result) = f() {
             self.signal();
@@ -221,6 +218,16 @@ impl WaitQueue {
     }
 }
 
+impl AsyncWait {
+    /// Awaits the [`Gate`] to be open.
+    #[inline]
+    pub async fn wait(self: &mut Pin<&mut Self>) {
+        let this = unsafe { ptr::read(self) };
+        let mut pinned_pager = unsafe { Pin::new_unchecked(&mut this.get_unchecked_mut().pager) };
+        let _result = pinned_pager.poll_async().await;
+    }
+}
+
 impl Default for AsyncWait {
     #[inline]
     fn default() -> Self {
@@ -235,21 +242,8 @@ impl Default for AsyncWait {
 impl DeriveAsyncWait for Pin<&mut AsyncWait> {
     #[inline]
     fn derive(&mut self) -> Option<&mut AsyncWait> {
-        Some(self)
-    }
-}
-
-impl Future for AsyncWait {
-    type Output = ();
-
-    #[inline]
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let pinned_pager = Pin::new(&mut self.pager);
-        if pinned_pager.poll(cx).is_ready() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
+        let this = unsafe { ptr::read(self) };
+        Some(unsafe { this.get_unchecked_mut() })
     }
 }
 

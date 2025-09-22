@@ -5,6 +5,7 @@ use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
 use std::ops::{Deref, DerefMut, RangeInclusive};
+use std::pin::pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
@@ -204,7 +205,7 @@ where
     /// ```
     #[inline]
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
-        let async_pager = AsyncPager::default();
+        let async_pager = pin!(AsyncPager::default());
         let sendable_guard = SendableGuard::new(&async_pager);
         let hash = self.hash(&key);
 
@@ -331,7 +332,7 @@ where
     /// ```
     #[inline]
     pub async fn put_async(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
-        let async_pager = AsyncPager::default();
+        let async_pager = pin!(AsyncPager::default());
         let sendable_guard = SendableGuard::new(&async_pager);
         let hash = self.hash(&key);
 
@@ -414,7 +415,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let async_pager = AsyncPager::default();
+        let async_pager = pin!(AsyncPager::default());
         let sendable_guard = SendableGuard::new(&async_pager);
         let hash = self.hash(key);
 
@@ -508,7 +509,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let async_pager = AsyncPager::default();
+        let async_pager = pin!(AsyncPager::default());
         let sendable_guard = SendableGuard::new(&async_pager);
         let hash = self.hash(key);
 
@@ -646,7 +647,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let async_pager = AsyncPager::default();
+        let async_pager = pin!(AsyncPager::default());
         let sendable_guard = SendableGuard::new(&async_pager);
         let hash = self.hash(key);
 
@@ -729,7 +730,7 @@ where
     /// ```
     #[inline]
     pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
-        let async_pager = AsyncPager::default();
+        let async_pager = pin!(AsyncPager::default());
         let sendable_guard = SendableGuard::new(&async_pager);
         let mut result = true;
 
@@ -823,7 +824,7 @@ where
         &self,
         mut f: F,
     ) -> bool {
-        let async_pager = AsyncPager::default();
+        let async_pager = pin!(AsyncPager::default());
         let sendable_guard = SendableGuard::new(&async_pager);
         let mut result = true;
 
