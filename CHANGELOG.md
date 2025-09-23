@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.1.1
+
+* Remove the 128B alignment requirement for `Hash*` asynchronous methods.
+
 3.1.0
 
 * Optimize stack memory usage of asynchronous `Hash*` methods: [#194](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/194).

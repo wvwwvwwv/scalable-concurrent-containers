@@ -24,7 +24,6 @@ mod hashmap {
     static_assertions::assert_impl_all!(SendableGuard: Send, Sync);
     static_assertions::assert_eq_size!(SendableGuard, (usize, usize));
     static_assertions::assert_not_impl_any!(AsyncPager: Unpin);
-    static_assertions::assert_eq_size!(AsyncPager, [u64; 16]);
     static_assertions::assert_not_impl_any!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_map::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, RefUnwindSafe, UnwindSafe);
@@ -122,17 +121,18 @@ mod hashmap {
 
     #[test]
     fn future_size() {
+        let limit = 800;
         let hashmap: HashMap<usize, usize> = HashMap::default();
         let insert_size = size_of_val(&hashmap.insert_async(0, 0));
-        assert!(insert_size < 900, "{insert_size}");
+        assert!(insert_size < limit, "{insert_size}");
         let entry_size = size_of_val(&hashmap.entry_async(0));
-        assert!(entry_size < 900, "{entry_size}");
+        assert!(entry_size < limit, "{entry_size}");
         let read_size = size_of_val(&hashmap.read_async(&0, |_, _| {}));
-        assert!(read_size < 900, "{read_size}");
+        assert!(read_size < limit, "{read_size}");
         let remove_size = size_of_val(&hashmap.remove_async(&0));
-        assert!(remove_size < 900, "{remove_size}");
+        assert!(remove_size < limit, "{remove_size}");
         let iter_size = size_of_val(&hashmap.iter_async(|_, _| true));
-        assert!(iter_size < 900, "{iter_size}");
+        assert!(iter_size < limit, "{iter_size}");
     }
 
     #[cfg_attr(miri, ignore)]
