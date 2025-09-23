@@ -843,19 +843,14 @@ where
                 let bucket = old_array.bucket(old_index);
                 let writer = Writer::lock_async(bucket, sendable_guard).await;
                 if let Some(writer) = writer {
-                    if !self
-                        .relocate_bucket_async(
-                            current_array,
-                            old_array,
-                            old_index,
-                            writer,
-                            sendable_guard,
-                        )
-                        .await
-                    {
-                        // Bucket array validation failed.
-                        return false;
-                    }
+                    self.relocate_bucket_async(
+                        current_array,
+                        old_array,
+                        old_index,
+                        writer,
+                        sendable_guard,
+                    )
+                    .await;
                 } else if !sendable_guard.has_guard() {
                     // The bucket was killed and the guard has been invalidated. Validating the
                     // reference is not sufficient in this case since the current bucket array could
@@ -910,8 +905,6 @@ where
     }
 
     /// Relocates the bucket to the current bucket array.
-    ///
-    /// Returns `false` if the bucket array has been updated.
     async fn relocate_bucket_async<'g>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
@@ -919,11 +912,13 @@ where
         old_index: usize,
         old_writer: Writer<'g, K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
-    ) -> bool {
+    ) {
         if old_writer.len() == 0 {
-            let validated = sendable_guard.check_ref(self.bucket_array(), current_array, Acquire);
+            // Instantiate a guard while the lock is held to ensure that the bucket arrays are not
+            // dropped.
+            sendable_guard.guard();
             old_writer.kill();
-            return validated;
+            return;
         }
 
         let (target_index, end_target_index) =
@@ -955,10 +950,10 @@ where
         );
         drop(unlock);
 
-        // Validate the reference before killing the bucket.
-        let validated = sendable_guard.check_ref(self.bucket_array(), current_array, Acquire);
+        // Instantiate a guard while the lock is held to ensure that the bucket arrays are not
+        // dropped.
+        sendable_guard.guard();
         old_writer.kill();
-        validated
     }
 
     /// Relocates the bucket to the current bucket array.

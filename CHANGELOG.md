@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.1.2
+
+* Minor performance optimization.
+
 3.1.1
 
 * Remove the 128B alignment requirement for `Hash*` asynchronous methods.
