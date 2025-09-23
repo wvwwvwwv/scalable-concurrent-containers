@@ -22,7 +22,7 @@ mod hashmap {
 
     static_assertions::assert_eq_size!(Option<Writer<usize, usize, (), MAP>>, usize);
     static_assertions::assert_impl_all!(SendableGuard: Send, Sync);
-    static_assertions::assert_eq_size!(SendableGuard, (usize, [u64; 16]));
+    static_assertions::assert_eq_size!(SendableGuard, [u64; 17]);
     static_assertions::assert_not_impl_any!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_map::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, RefUnwindSafe, UnwindSafe);

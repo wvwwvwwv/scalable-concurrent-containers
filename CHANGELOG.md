@@ -5,7 +5,7 @@
 
 3.1.2
 
-* Minor performance optimization.
+* Minor memory usage optimization.
 
 3.1.1
 
