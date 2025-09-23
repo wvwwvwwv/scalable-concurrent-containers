@@ -772,8 +772,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     ) -> Option<Writer<'g, K, V, L, TYPE>> {
         if bucket.rw_lock.try_lock() {
             Some(Writer { bucket })
-        } else if bucket.rw_lock.is_poisoned(Acquire) {
-            None
         } else if sendable_guard.wait_acquire(&bucket.rw_lock, true).await {
             // The `bucket` was not killed, and will not be killed until the `Writer` is dropped.
             // This guarantees that the `BucketArray` will survive as long as the `Writer` is alive.
@@ -872,8 +870,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
     ) -> Option<Reader<'g, K, V, L, TYPE>> {
         if bucket.rw_lock.try_share() {
             Some(Reader { bucket })
-        } else if bucket.rw_lock.is_poisoned(Acquire) {
-            None
         } else if sendable_guard.wait_acquire(&bucket.rw_lock, false).await {
             // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
             // This guarantees that the `BucketArray` will survive as long as the `Reader` is alive.

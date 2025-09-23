@@ -15,7 +15,7 @@ use super::Equivalent;
 use super::hash_table::bucket::{CACHE, DoublyLinkedList, EntryPtr};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
-use crate::async_helper::{AsyncPager, SendableGuard};
+use crate::async_helper::SendableGuard;
 use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, Writer};
 
 /// Scalable concurrent 32-way associative cache backed by [`HashMap`](super::HashMap).
@@ -205,8 +205,7 @@ where
     /// ```
     #[inline]
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
-        let async_pager = pin!(AsyncPager::default());
-        let sendable_guard = SendableGuard::new(&async_pager);
+        let sendable_guard = pin!(SendableGuard::default());
         let hash = self.hash(&key);
 
         self.writer_async(hash, &sendable_guard, |writer, data_block, index, len| {
@@ -332,8 +331,7 @@ where
     /// ```
     #[inline]
     pub async fn put_async(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
-        let async_pager = pin!(AsyncPager::default());
-        let sendable_guard = SendableGuard::new(&async_pager);
+        let sendable_guard = pin!(SendableGuard::default());
         let hash = self.hash(&key);
 
         self.writer_async(hash, &sendable_guard, |writer, data_block, _, _| {
@@ -415,8 +413,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let async_pager = pin!(AsyncPager::default());
-        let sendable_guard = SendableGuard::new(&async_pager);
+        let sendable_guard = pin!(SendableGuard::default());
         let hash = self.hash(key);
 
         self.optional_writer_async(hash, &sendable_guard, |writer, data_block, index, len| {
@@ -509,8 +506,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let async_pager = pin!(AsyncPager::default());
-        let sendable_guard = SendableGuard::new(&async_pager);
+        let sendable_guard = pin!(SendableGuard::default());
         let hash = self.hash(key);
 
         self.reader_async(key, hash, reader, &sendable_guard).await
@@ -647,8 +643,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let async_pager = pin!(AsyncPager::default());
-        let sendable_guard = SendableGuard::new(&async_pager);
+        let sendable_guard = pin!(SendableGuard::default());
         let hash = self.hash(key);
 
         self.optional_writer_async(hash, &sendable_guard, |writer, data_block, _, _| {
@@ -730,8 +725,7 @@ where
     /// ```
     #[inline]
     pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
-        let async_pager = pin!(AsyncPager::default());
-        let sendable_guard = SendableGuard::new(&async_pager);
+        let sendable_guard = pin!(SendableGuard::default());
         let mut result = true;
 
         self.for_each_reader_async(&sendable_guard, |reader, data_block| {
@@ -824,8 +818,7 @@ where
         &self,
         mut f: F,
     ) -> bool {
-        let async_pager = pin!(AsyncPager::default());
-        let sendable_guard = SendableGuard::new(&async_pager);
+        let sendable_guard = pin!(SendableGuard::default());
         let mut result = true;
 
         self.for_each_writer_async(0, 0, &sendable_guard, |writer, data_block, _, _| {

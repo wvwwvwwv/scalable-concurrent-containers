@@ -3,6 +3,7 @@ pub mod bucket_array;
 
 use std::hash::{BuildHasher, Hash};
 use std::mem::forget;
+use std::pin::pin;
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -13,7 +14,7 @@ use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
 use super::exit_guard::ExitGuard;
-use crate::async_helper::{AsyncPager, SendableGuard};
+use crate::async_helper::SendableGuard;
 
 /// The maximum resize factor.
 const MAX_RESIZE_FACTOR: usize = (usize::BITS / 2) as usize;
@@ -1546,8 +1547,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
         }
 
         let try_shrink = self.writer.len() == 0;
-        let async_pager = AsyncPager::default();
-        let sendable_guard = SendableGuard::new(&async_pager);
+        let sendable_guard = pin!(SendableGuard::default());
         let next_index = self.index + 1;
         let len = self.len;
         drop(self);

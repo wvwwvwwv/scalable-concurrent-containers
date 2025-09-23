@@ -1,9 +1,9 @@
 use std::cell::UnsafeCell;
-use std::marker::PhantomPinned;
 use std::mem::ManuallyDrop;
 use std::pin::{Pin, pin};
 use std::ptr;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::Ordering::Acquire;
 
 use saa::lock::Mode as LockMode;
 use saa::{Gate, Lock, Pager};
@@ -11,32 +11,19 @@ use sdd::{AtomicShared, Guard};
 
 use crate::exit_guard::ExitGuard;
 
-/// [`AsyncPager`] is used to reduce the size of asynchronous tasks.
+/// [`SendableGuard`] is used when an asynchronous task needs to be suspended without invalidating
+/// any references.
 ///
-/// The alignment of [`Pager`] is 128 bytes that propagates all the other structs containing
-/// [`Pager`], bloating the future of the stack. Therefore, a [`Pager`] is managed by a separate,
-/// independent data structure instead of embedding it in [`SendableGuard`].
+/// The validity of those references must be checked and verified by the user.
 #[derive(Debug, Default)]
-pub(crate) struct AsyncPager {
+pub(crate) struct SendableGuard {
+    /// [`Guard`] that can be dropped without invalidating any references.
+    guard: UnsafeCell<Option<Guard>>,
     /// [`Pager`] that enables asynchronous lock acquisition.
     ///
     /// [`Pager`] needs to be dropped before the [`Guard`], therefore manual lifetime management is
     /// required; [`SendableGuard`] manually drops the contained [`Pager`].
     pager: UnsafeCell<ManuallyDrop<Pager<'static, Lock>>>,
-    /// [`PhantomPinned`] is used to prevent the struct from being moved.
-    _pinned: PhantomPinned,
-}
-
-/// [`SendableGuard`] is used when an asynchronous task needs to be suspended without invalidating
-/// any references.
-///
-/// The validity of those references must be checked and verified by the user.
-#[derive(Debug)]
-pub(crate) struct SendableGuard {
-    /// [`Guard`] that can be dropped without invalidating any references.
-    guard: UnsafeCell<Option<Guard>>,
-    /// Pinned [`AsyncPager`] that enables asynchronous lock acquisition.
-    pager: &'static AsyncPager,
 }
 
 /// [`WaitQueue`] implements an unfair wait queue.
@@ -62,14 +49,6 @@ pub(crate) trait DeriveAsyncWait {
 }
 
 impl SendableGuard {
-    /// Creates a new [`SendableGuard`] with the given [`AsyncPager`].
-    pub(crate) fn new(async_pager: &AsyncPager) -> Self {
-        Self {
-            guard: UnsafeCell::new(None),
-            pager: unsafe { std::mem::transmute::<&AsyncPager, &'static AsyncPager>(async_pager) },
-        }
-    }
-
     /// Returns `true` if the [`SendableGuard`] contains a valid [`Guard`].
     #[inline]
     pub(crate) fn has_guard(&self) -> bool {
@@ -78,6 +57,9 @@ impl SendableGuard {
 
     /// Acquires a write or read lock after waiting for the lock to be available.
     pub(crate) async fn wait_acquire<'l>(&self, lock: &'l Lock, writer: bool) -> bool {
+        if lock.is_poisoned(Acquire) {
+            return false;
+        }
         let mut unwind_guard = ExitGuard::new(true, |unwind| {
             if unwind {
                 // During unwinding the stack, a guard is needed.
@@ -96,7 +78,7 @@ impl SendableGuard {
 
         let mut pinned_pager = unsafe {
             let pager_ref = std::mem::transmute::<&mut Pager<'static, Lock>, &mut Pager<'l, Lock>>(
-                &mut **self.pager.pager.get(),
+                &mut **self.pager.get(),
             );
             Pin::new_unchecked(pager_ref)
         };
@@ -155,8 +137,8 @@ impl SendableGuard {
 impl Drop for SendableGuard {
     fn drop(&mut self) {
         unsafe {
-            // The pager needs to be dropped first while the guard is still valid while unwinding.
-            ManuallyDrop::drop(&mut *self.pager.pager.get());
+            // The pager needs to be dropped first while the guard is still valid when unwinding.
+            ManuallyDrop::drop(&mut *self.pager.get());
         }
     }
 }
@@ -170,10 +152,6 @@ impl WaitQueue {
     /// Waits for the condition to be met or signaled.
     #[inline]
     pub(crate) fn wait_sync<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
-        if cfg!(miri) {
-            return f();
-        }
-
         let mut pinned_pager = pin!(Pager::default());
         self.gate.register_pager(&mut pinned_pager, true);
 

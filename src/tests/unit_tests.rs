@@ -15,16 +15,14 @@ mod hashmap {
     use proptest::test_runner::TestRunner;
     use tokio::sync::Barrier as AsyncBarrier;
 
-    use crate::async_helper::{AsyncPager, SendableGuard};
+    use crate::async_helper::SendableGuard;
     use crate::hash_map::{self, Entry, Reserve};
     use crate::hash_table::bucket::{MAP, Writer};
     use crate::{Equivalent, HashMap};
 
     static_assertions::assert_eq_size!(Option<Writer<usize, usize, (), MAP>>, usize);
     static_assertions::assert_impl_all!(SendableGuard: Send, Sync);
-    static_assertions::assert_eq_size!(SendableGuard, (usize, usize));
-    static_assertions::assert_not_impl_any!(AsyncPager: Unpin);
-    static_assertions::assert_eq_size!(AsyncPager, [u64; 16]);
+    static_assertions::assert_eq_size!(SendableGuard, (usize, [u64; 16]));
     static_assertions::assert_not_impl_any!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_map::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, RefUnwindSafe, UnwindSafe);
