@@ -1,15 +1,10 @@
 use std::cell::UnsafeCell;
-use std::mem::ManuallyDrop;
 use std::pin::{Pin, pin};
 use std::ptr;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::Ordering::Acquire;
 
-use saa::lock::Mode as LockMode;
-use saa::{Gate, Lock, Pager};
+use saa::{Gate, Pager};
 use sdd::{AtomicShared, Guard};
-
-use crate::exit_guard::ExitGuard;
 
 /// [`SendableGuard`] is used when an asynchronous task needs to be suspended without invalidating
 /// any references.
@@ -19,11 +14,6 @@ use crate::exit_guard::ExitGuard;
 pub(crate) struct SendableGuard {
     /// [`Guard`] that can be dropped without invalidating any references.
     guard: UnsafeCell<Option<Guard>>,
-    /// [`Pager`] that enables asynchronous lock acquisition.
-    ///
-    /// [`Pager`] needs to be dropped before the [`Guard`], therefore manual lifetime management is
-    /// required; [`SendableGuard`] manually drops the contained [`Pager`].
-    pager: UnsafeCell<ManuallyDrop<Pager<'static, Lock>>>,
 }
 
 /// [`WaitQueue`] implements an unfair wait queue.
@@ -53,50 +43,6 @@ impl SendableGuard {
     #[inline]
     pub(crate) fn has_guard(&self) -> bool {
         unsafe { (*self.guard.get()).is_some() }
-    }
-
-    /// Acquires a write or read lock after waiting for the lock to be available.
-    pub(crate) async fn wait_acquire<'l>(&self, lock: &'l Lock, writer: bool) -> bool {
-        if lock.is_poisoned(Acquire) {
-            return false;
-        }
-        let mut unwind_guard = ExitGuard::new(true, |unwind| {
-            if unwind {
-                // During unwinding the stack, a guard is needed.
-                //
-                // At this point, the pager is not registered and no guard is present in the stack,
-                // allowing anyone to drop the bucket array containing the lock. By instantiating a
-                // new guard, use-after-free can be prevented thanks to `SeqCst` operations when
-                // instantiating a new guard.
-                // - Case 1: drop-bucket-array -> this guard. When dropping the bucket array, the
-                //  lock must have been poisoned, so the pager already knows it.
-                // - Case 2: this guard -> drop-bucket-array. The dropped bucket array remains in
-                //  memory until the guard is dropped.
-                self.guard();
-            }
-        });
-
-        let mut pinned_pager = unsafe {
-            let pager_ref = std::mem::transmute::<&mut Pager<'static, Lock>, &mut Pager<'l, Lock>>(
-                &mut **self.pager.get(),
-            );
-            Pin::new_unchecked(pager_ref)
-        };
-        let lock_mode = if writer {
-            LockMode::Exclusive
-        } else {
-            LockMode::Shared
-        };
-        lock.register_pager(&mut pinned_pager, lock_mode, false);
-
-        // The guard needs to be released before polling.
-        self.reset();
-
-        // The pager is properly registered, therefore it will get a result unless cancelled.
-        let result = pinned_pager.poll_async().await.ok().unwrap_or(false);
-        *unwind_guard = false;
-
-        result
     }
 
     /// Returns or creates a new [`Guard`].
@@ -131,15 +77,6 @@ impl SendableGuard {
             .load(mo, self.guard())
             .as_ref()
             .is_some_and(|s| ptr::eq(s, r))
-    }
-}
-
-impl Drop for SendableGuard {
-    fn drop(&mut self) {
-        unsafe {
-            // The pager needs to be dropped first while the guard is still valid when unwinding.
-            ManuallyDrop::drop(&mut *self.pager.get());
-        }
     }
 }
 

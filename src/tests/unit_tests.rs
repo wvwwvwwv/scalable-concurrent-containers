@@ -22,7 +22,7 @@ mod hashmap {
 
     static_assertions::assert_eq_size!(Option<Writer<usize, usize, (), MAP>>, usize);
     static_assertions::assert_impl_all!(SendableGuard: Send, Sync);
-    static_assertions::assert_eq_size!(SendableGuard, [u64; 17]);
+    static_assertions::assert_eq_size!(SendableGuard, usize);
     static_assertions::assert_not_impl_any!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_map::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, RefUnwindSafe, UnwindSafe);
@@ -120,7 +120,7 @@ mod hashmap {
 
     #[test]
     fn future_size() {
-        let limit = 740;
+        let limit = 728;
         let hashmap: HashMap<usize, usize> = HashMap::default();
         let insert_size = size_of_val(&hashmap.insert_async(0, 0));
         assert!(insert_size < limit, "{insert_size}");
