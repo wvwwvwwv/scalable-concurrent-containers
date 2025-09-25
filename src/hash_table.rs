@@ -16,9 +16,6 @@ use super::Equivalent;
 use super::exit_guard::ExitGuard;
 use crate::async_helper::SendableGuard;
 
-/// The maximum resize factor.
-const MAX_RESIZE_FACTOR: usize = (usize::BITS / 2) as usize;
-
 /// `HashTable` defines common functions for hash table implementations.
 pub(super) trait HashTable<K, V, H, L: LruList, const TYPE: char>
 where
@@ -1027,12 +1024,14 @@ where
         old_writer: &Writer<'_, K, V, L, TYPE>,
         guard: &Guard,
     ) {
-        // Need to pre-allocate slots if the container is shrinking or the old bucket overflows.
+        // Need to pre-allocate slots if the container is shrinking or the old bucket overflows,
+        // because incomplete relocation of entries may result in duplicate key problems.
         let pre_allocate_slots =
             old_array.len() >= current_array.len() || old_writer.len() > BUCKET_LEN;
-        let mut distribution = [0_u32; MAX_RESIZE_FACTOR];
+        let mut distribution = [0_u32; 8];
+        let mut extended_distribution: Vec<u32> = Vec::new();
         let mut rehash_data = [[(0_u8, 0_u8); BUCKET_LEN]; 2];
-        let mut extended = Vec::new();
+        let mut extended_data = Vec::new();
         let old_data_block = old_array.data_block(old_index);
 
         // Collect data for relocation.
@@ -1060,9 +1059,16 @@ where
                         (index, partial_hash);
                     position += 1;
                 } else {
-                    extended.push((index, partial_hash));
+                    extended_data.push((index, partial_hash));
                 }
-                distribution[usize::from(index)] += 1;
+                if usize::from(index) < 8 {
+                    distribution[usize::from(index)] += 1;
+                } else {
+                    if extended_distribution.len() < usize::from(index) - 7 {
+                        extended_distribution.resize(usize::from(index) - 7, 0);
+                    }
+                    extended_distribution[usize::from(index) - 8] += 1;
+                }
             } else {
                 let bucket = current_array.bucket(target_index + usize::from(index));
                 bucket.extract_from(
@@ -1087,6 +1093,12 @@ where
                 bucket.reserve_slots((*d) as usize, guard);
             }
         }
+        for (i, d) in extended_distribution.iter().enumerate() {
+            if *d != 0 {
+                let bucket = current_array.bucket(target_index + i + 8);
+                bucket.reserve_slots((*d) as usize, guard);
+            }
+        }
 
         // Relocate entries; it is infallible.
         entry_ptr = EntryPtr::new(guard);
@@ -1095,7 +1107,7 @@ where
             let (index, partial_hash) = if position < BUCKET_LEN * 2 {
                 rehash_data[position / BUCKET_LEN][position % BUCKET_LEN]
             } else {
-                extended[position - BUCKET_LEN * 2]
+                extended_data[position - BUCKET_LEN * 2]
             };
             let bucket = current_array.bucket(target_index + usize::from(index));
             bucket.extract_from(
@@ -1109,6 +1121,7 @@ where
             position += 1;
         }
     }
+
     /// Starts incremental rehashing.
     #[inline]
     fn start_incremental_rehash(&self, old_array: &BucketArray<K, V, L, TYPE>) -> Option<usize> {
@@ -1366,9 +1379,6 @@ where
                 while new_capacity / 2 < estimated_num_entries {
                     // Double `new_capacity` until the expected load factor becomes ~0.43.
                     if new_capacity == self.maximum_capacity() {
-                        break;
-                    }
-                    if new_capacity / capacity == MAX_RESIZE_FACTOR {
                         break;
                     }
                     new_capacity *= 2;
