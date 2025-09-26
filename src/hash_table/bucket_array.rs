@@ -1,17 +1,19 @@
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::mem::{align_of, size_of};
 use std::panic::UnwindSafe;
+use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 use sdd::{AtomicShared, Guard, Ptr, Tag};
 
 use super::bucket::{BUCKET_LEN, Bucket, DataBlock, INDEX, LruList};
+use crate::exit_guard::ExitGuard;
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
 pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
-    bucket_ptr: *const Bucket<K, V, L, TYPE>,
-    data_block_ptr: *const DataBlock<K, V, BUCKET_LEN>,
+    buckets: NonNull<Bucket<K, V, L, TYPE>>,
+    data_blocks: NonNull<DataBlock<K, V, BUCKET_LEN>>,
     array_len: usize,
     hash_offset: u32,
     sample_size_mask: u16,
@@ -21,43 +23,9 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
 }
 
 impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
-    /// Returns the number of [`Bucket`] instances in the [`BucketArray`].
-    #[inline]
-    pub(crate) const fn len(&self) -> usize {
-        self.array_len
-    }
-
-    /// Returns a reference to a [`Bucket`] at the given position.
-    #[inline]
-    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
-        debug_assert!(index < self.len());
-        unsafe { &(*(self.bucket_ptr.add(index))) }
-    }
-
-    /// Returns a mutable reference to a [`DataBlock`] at the given position.
-    #[inline]
-    pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
-        debug_assert!(index < self.len());
-        unsafe { &*self.data_block_ptr.add(index) }
-    }
-
-    /// Calculates the layout of the memory block for an array of `T`.
-    #[inline]
-    const fn calculate_memory_layout<T: Sized>(array_len: usize) -> (usize, usize, Layout) {
-        let size_of_t = size_of::<T>();
-        let aligned_size = size_of_t.next_power_of_two();
-        let allocation_size = aligned_size + array_len * size_of_t;
-        (size_of_t, allocation_size, unsafe {
-            // Intentionally misaligned in order to take full advantage of demand paging.
-            Layout::from_size_align_unchecked(allocation_size, 1)
-        })
-    }
-}
-
-impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Creates a new [`BucketArray`] of the given capacity.
     ///
-    /// `capacity` is the desired number of entries, not the number of [`Bucket`] instances.
+    /// `capacity` is the desired number of entries, not the length of the bucket array.
     pub(crate) fn new(
         capacity: usize,
         old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
@@ -68,30 +36,27 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         let array_len = 1_usize << log2_array_len;
         unsafe {
             let (bucket_size, bucket_array_allocation_size, bucket_array_layout) =
-                Self::calculate_memory_layout::<Bucket<K, V, L, TYPE>>(array_len);
-            let bucket_array_ptr = alloc_zeroed(bucket_array_layout);
-            assert!(
-                !bucket_array_ptr.is_null(),
-                "memory allocation failure: {bucket_array_allocation_size} bytes",
-            );
+                Self::bucket_array_layout(array_len);
+            let Some(unalignedbucket_array_ptr) = NonNull::new(alloc_zeroed(bucket_array_layout))
+            else {
+                panic!("memory allocation failure: {bucket_array_allocation_size} bytes");
+            };
             let bucket_array_ptr_offset = bucket_size.next_power_of_two()
-                - (bucket_array_ptr as usize % bucket_size.next_power_of_two());
+                - (unalignedbucket_array_ptr.addr().get() % bucket_size.next_power_of_two());
             assert!(
                 bucket_array_ptr_offset + bucket_size * array_len <= bucket_array_allocation_size,
             );
             assert_eq!(
-                (bucket_array_ptr as usize + bucket_array_ptr_offset)
+                (unalignedbucket_array_ptr.addr().get() + bucket_array_ptr_offset)
                     % bucket_size.next_power_of_two(),
                 0
             );
 
             #[allow(clippy::cast_ptr_alignment)]
-            let bucket_array_ptr =
-                bucket_array_ptr
-                    .add(bucket_array_ptr_offset)
-                    .cast::<Bucket<K, V, L, TYPE>>();
-            #[allow(clippy::cast_possible_truncation)]
-            let bucket_array_ptr_offset = bucket_array_ptr_offset as u16;
+            let buckets = unalignedbucket_array_ptr
+                .add(bucket_array_ptr_offset)
+                .cast::<Bucket<K, V, L, TYPE>>();
+            let bucket_array_ptr_offset = u16::try_from(bucket_array_ptr_offset).unwrap_or(0);
 
             let data_block_array_layout = Layout::from_size_align(
                 size_of::<DataBlock<K, V, BUCKET_LEN>>() * array_len,
@@ -99,27 +64,57 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             )
             .unwrap();
 
-            let data_block_array_ptr =
-                alloc(data_block_array_layout).cast::<DataBlock<K, V, BUCKET_LEN>>();
-            assert!(
-                !data_block_array_ptr.is_null(),
-                "memory allocation failure: {} bytes",
-                data_block_array_layout.size(),
-            );
+            // In case the below data block allocation fails, deallocate the bucket array.
+            let mut alloc_guard = ExitGuard::new(false, |allocated| {
+                if !allocated {
+                    dealloc(
+                        unalignedbucket_array_ptr.cast::<u8>().as_ptr(),
+                        bucket_array_layout,
+                    );
+                }
+            });
 
-            let sample_size_mask = u16::from(log2_array_len).next_power_of_two() - 1;
+            let Some(data_blocks) =
+                NonNull::new(alloc(data_block_array_layout).cast::<DataBlock<K, V, BUCKET_LEN>>())
+            else {
+                panic!(
+                    "memory allocation failure: {} bytes",
+                    data_block_array_layout.size()
+                );
+            };
+            *alloc_guard = true;
 
             Self {
-                bucket_ptr: bucket_array_ptr,
-                data_block_ptr: data_block_array_ptr,
+                buckets,
+                data_blocks,
                 array_len,
-                hash_offset: 64 - u32::from(log2_array_len),
-                sample_size_mask,
+                hash_offset: u64::BITS - u32::from(log2_array_len),
+                sample_size_mask: u16::from(log2_array_len).next_power_of_two() - 1,
                 bucket_ptr_offset: bucket_array_ptr_offset,
                 old_array,
                 num_cleared_buckets: AtomicUsize::new(0),
             }
         }
+    }
+
+    /// Returns the number of [`Bucket`] instances in the [`BucketArray`].
+    #[inline]
+    pub(crate) const fn len(&self) -> usize {
+        self.array_len
+    }
+
+    /// Returns a reference to a [`Bucket`] at the given position.
+    #[inline]
+    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
+        debug_assert!(index < self.len());
+        unsafe { self.buckets.add(index).as_ref() }
+    }
+
+    /// Returns a mutable reference to a [`DataBlock`] at the given position.
+    #[inline]
+    pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
+        debug_assert!(index < self.len());
+        unsafe { self.data_blocks.add(index).as_ref() }
     }
 
     /// Returns the number of entry slots in the bucket array.
@@ -199,6 +194,18 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         });
     }
 
+    /// Calculates the layout of the memory block for an array of `T`.
+    #[inline]
+    const fn bucket_array_layout(array_len: usize) -> (usize, usize, Layout) {
+        let size_of_t = size_of::<Bucket<K, V, L, TYPE>>();
+        let aligned_size = size_of_t.next_power_of_two();
+        let allocation_size = aligned_size + array_len * size_of_t;
+        (size_of_t, allocation_size, unsafe {
+            // Intentionally misaligned in order to take full advantage of demand paging.
+            Layout::from_size_align_unchecked(allocation_size, 1)
+        })
+    }
+
     /// Calculates log₂ of the array size from the given capacity.
     ///
     /// Returns a non-zero `u8`, even when `capacity < 2 * BUCKET_LEN`.
@@ -238,14 +245,14 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
 
         unsafe {
             dealloc(
-                self.bucket_ptr
+                self.buckets
                     .cast::<u8>()
-                    .cast_mut()
-                    .sub(self.bucket_ptr_offset as usize),
-                Self::calculate_memory_layout::<Bucket<K, V, L, TYPE>>(self.array_len).2,
+                    .sub(self.bucket_ptr_offset as usize)
+                    .as_ptr(),
+                Self::bucket_array_layout(self.array_len).2,
             );
             dealloc(
-                self.data_block_ptr.cast::<u8>().cast_mut(),
+                self.data_blocks.cast::<u8>().as_ptr(),
                 Layout::from_size_align(
                     size_of::<DataBlock<K, V, BUCKET_LEN>>() * self.array_len,
                     align_of::<[DataBlock<K, V, BUCKET_LEN>; 0]>(),
