@@ -52,7 +52,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 0
             );
 
-            #[allow(clippy::cast_ptr_alignment)]
+            #[allow(clippy::cast_ptr_alignment)] // The alignment was just asserted.
             let buckets = unalignedbucket_array_ptr
                 .add(bucket_array_ptr_offset)
                 .cast::<Bucket<K, V, L, TYPE>>();
@@ -103,18 +103,23 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         self.array_len
     }
 
-    /// Returns a reference to a [`Bucket`] at the given position.
+    /// Returns a non-null pointer to a [`Bucket`] at the given position.
+    #[allow(dead_code)]
     #[inline]
-    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
+    pub(crate) const fn bucket_ptr(&self, index: usize) -> NonNull<Bucket<K, V, L, TYPE>> {
         debug_assert!(index < self.len());
-        unsafe { self.buckets.add(index).as_ref() }
+        unsafe { self.buckets.add(index) }
     }
 
-    /// Returns a mutable reference to a [`DataBlock`] at the given position.
+    /// Returns a non-null pointer to a [`DataBlock`] at the given position.
+    #[allow(dead_code)]
     #[inline]
-    pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
+    pub(crate) const fn data_block_ptr(
+        &self,
+        index: usize,
+    ) -> NonNull<DataBlock<K, V, BUCKET_LEN>> {
         debug_assert!(index < self.len());
-        unsafe { self.data_blocks.add(index).as_ref() }
+        unsafe { self.data_blocks.add(index) }
     }
 
     /// Returns the number of entry slots in the bucket array.
@@ -124,7 +129,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     }
 
     /// Calculates the [`Bucket`] index for the hash value.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Intended truncation.
     #[inline]
     pub(crate) const fn calculate_bucket_index(&self, hash: u64) -> usize {
         // Take the upper n-bits to make sure that a single bucket is spread across a few adjacent
@@ -160,6 +165,20 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[inline]
     pub(crate) fn full_sample_size(&self) -> usize {
         (self.sample_size() * self.sample_size()).min(self.len())
+    }
+
+    /// Returns a reference to a [`Bucket`] at the given position.
+    #[inline]
+    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
+        debug_assert!(index < self.len());
+        unsafe { self.buckets.add(index).as_ref() }
+    }
+
+    /// Returns a reference to a [`DataBlock`] at the given position.
+    #[inline]
+    pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
+        debug_assert!(index < self.len());
+        unsafe { self.data_blocks.add(index).as_ref() }
     }
 
     /// Returns `true` if the old array exists.
@@ -209,7 +228,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Calculates log₂ of the array size from the given capacity.
     ///
     /// Returns a non-zero `u8`, even when `capacity < 2 * BUCKET_LEN`.
-    #[allow(clippy::cast_possible_truncation)]
     #[inline]
     fn calculate_log2_array_size(capacity: usize) -> u8 {
         let adjusted_capacity = capacity.clamp(64, (usize::MAX / 2) - (BUCKET_LEN - 1));
@@ -219,7 +237,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         // `2^log2_capacity * BUCKET_LEN >= capacity`.
         debug_assert!(log2_capacity < (usize::BITS as usize));
         debug_assert!((1_usize << log2_capacity) * BUCKET_LEN >= adjusted_capacity);
-        log2_capacity as u8
+        u8::try_from(log2_capacity).unwrap_or(0)
     }
 }
 
