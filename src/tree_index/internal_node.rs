@@ -125,7 +125,12 @@ impl<K, V> InternalNode<K, V> {
     /// Unlocks the [`InternalNode`].
     fn unlock(&self) {
         debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
-        self.latch.swap(Tag::None.into(), Release);
+        if let Err(prev) =
+            self.latch
+                .compare_exchange(LOCKED.into(), Tag::None.into(), Release, Relaxed)
+        {
+            debug_assert_eq!(prev, RETIRED.into());
+        }
         self.wait_queue.signal();
     }
 
