@@ -3,10 +3,15 @@
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
+use std::mem::swap;
 use std::ops::{Deref, RangeInclusive};
+use std::pin::pin;
+
+use sdd::Guard;
 
 use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
+use crate::async_helper::SendableGuard;
 use crate::hash_map;
 
 /// Scalable concurrent hash set.
@@ -171,6 +176,113 @@ where
             return Err(k);
         }
         Ok(())
+    }
+
+    /// Adds a key to the set, replacing the existing key, if any, that is equal to the given one.
+    ///
+    /// Returns the replaced key, if any.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::cmp::{Eq, PartialEq};
+    /// use std::hash::{Hash, Hasher};
+    ///
+    /// use scc::HashSet;
+    ///
+    /// #[derive(Debug)]
+    /// struct MaybeEqual(u64, u64);
+    ///
+    /// impl Eq for MaybeEqual {}
+    ///
+    /// impl Hash for MaybeEqual {
+    ///     fn hash<H: Hasher>(&self, state: &mut H) {
+    ///         // Do not read `self.1`.
+    ///         self.0.hash(state);
+    ///     }
+    /// }
+    ///
+    /// impl PartialEq for MaybeEqual {
+    ///     fn eq(&self, other: &Self) -> bool {
+    ///         // Do not compare `self.1`.
+    ///         self.0 == other.0
+    ///     }
+    /// }
+    ///
+    /// let hashset: HashSet<MaybeEqual> = HashSet::default();
+    ///
+    /// assert!(hashset.replace_sync(MaybeEqual(11, 7)).is_none());
+    /// assert_eq!(hashset.replace_sync(MaybeEqual(11, 11)), Some(MaybeEqual(11, 7)));
+    /// ```
+    #[inline]
+    pub async fn replace_async(&self, mut key: K) -> Option<K> {
+        let hash = self.map.hash(&key);
+        let sendable_guard = pin!(SendableGuard::default());
+        let mut locked_bucket = self.map.writer_async(hash, &sendable_guard).await;
+        let guard = sendable_guard.guard();
+        let mut entry_ptr = locked_bucket.search(&key, hash, guard);
+        if entry_ptr.is_valid() {
+            let k = &mut locked_bucket.entry_mut(&mut entry_ptr).0;
+            swap(k, &mut key);
+            Some(key)
+        } else {
+            locked_bucket.insert(hash, (key, ()), guard);
+            None
+        }
+    }
+
+    /// Adds a key to the set, replacing the existing key, if any, that is equal to the given one.
+    ///
+    /// Returns the replaced key, if any.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::cmp::{Eq, PartialEq};
+    /// use std::hash::{Hash, Hasher};
+    ///
+    /// use scc::HashSet;
+    ///
+    /// #[derive(Debug)]
+    /// struct MaybeEqual(u64, u64);
+    ///
+    /// impl Eq for MaybeEqual {}
+    ///
+    /// impl Hash for MaybeEqual {
+    ///     fn hash<H: Hasher>(&self, state: &mut H) {
+    ///         // Do not read `self.1`.
+    ///         self.0.hash(state);
+    ///     }
+    /// }
+    ///
+    /// impl PartialEq for MaybeEqual {
+    ///     fn eq(&self, other: &Self) -> bool {
+    ///         // Do not compare `self.1`.
+    ///         self.0 == other.0
+    ///     }
+    /// }
+    ///
+    /// let hashset: HashSet<MaybeEqual> = HashSet::default();
+    ///
+    /// async {
+    ///     assert!(hashset.replace_async(MaybeEqual(11, 7)).await.is_none());
+    ///     assert_eq!(hashset.replace_async(MaybeEqual(11, 11)).await, Some(MaybeEqual(11, 7)));
+    /// };
+    /// ```
+    #[inline]
+    pub fn replace_sync(&self, mut key: K) -> Option<K> {
+        let hash = self.map.hash(&key);
+        let guard = Guard::new();
+        let mut locked_bucket = self.map.writer_sync(hash, &guard);
+        let mut entry_ptr = locked_bucket.search(&key, hash, &guard);
+        if entry_ptr.is_valid() {
+            let k = &mut locked_bucket.entry_mut(&mut entry_ptr).0;
+            swap(k, &mut key);
+            Some(key)
+        } else {
+            locked_bucket.insert(hash, (key, ()), &guard);
+            None
+        }
     }
 
     /// Removes a key if the key exists.

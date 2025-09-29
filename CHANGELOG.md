@@ -6,6 +6,7 @@
 3.2.0
 
 * API update: `hash_index::OccupiedEntry::update` does not consume itself.
+* API update: add `HashSet::replace_{async|sync}`.
 * Minor memory usage optimization.
 
 3.1.2

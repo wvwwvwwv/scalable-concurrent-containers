@@ -1444,16 +1444,6 @@ where
         }
     }
 
-    /// Entries may have been removed during iteration.
-    #[inline]
-    fn entry_removed(&self, index: usize, guard: &Guard) {
-        if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
-            if current_array.len() > index && current_array.bucket(index).len() == 0 {
-                self.try_shrink_or_rebuild(current_array, index, guard);
-            }
-        }
-    }
-
     /// Returns an estimated required size of the container based on the size hint.
     #[inline]
     fn capacity_from_size_hint(size_hint: (usize, Option<usize>)) -> usize {
@@ -1539,7 +1529,12 @@ impl<K, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> {
 impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> {
     /// Searches for an entry with the given key.
     #[inline]
-    pub fn search<'g, Q>(&self, key: &Q, hash: u64, guard: &'g Guard) -> EntryPtr<'g, K, V, TYPE>
+    pub(crate) fn search<'g, Q>(
+        &self,
+        key: &Q,
+        hash: u64,
+        guard: &'g Guard,
+    ) -> EntryPtr<'g, K, V, TYPE>
     where
         Q: Equivalent<K> + ?Sized,
     {
@@ -1603,7 +1598,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         }
     }
 
-    /// Returns a [`LockedBucket`] owning the next entry asynchronously.
+    /// Returns a [`LockedBucket`] owning the next bucket asynchronously.
     #[inline]
     pub(super) async fn next_async<'h, H, T: HashTable<K, V, H, L, TYPE>>(
         self,
@@ -1614,20 +1609,18 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
     where
         H: BuildHasher,
     {
-        if entry_ptr.move_to_next(
-            &self.writer,
-            hash_table.prolonged_guard_ref(sendable_guard.guard()),
-        ) {
+        let prolonged_guard = hash_table.prolonged_guard_ref(sendable_guard.guard());
+        if entry_ptr.move_to_next(&self.writer, prolonged_guard) {
             return Some(self);
         }
 
-        let try_shrink = self.writer.len() == 0;
         let next_index = self.bucket_index + 1;
         let len = self.bucket_array().len();
-        drop(self);
 
-        if try_shrink {
-            hash_table.entry_removed(next_index - 1, sendable_guard.guard());
+        if self.writer.len() == 0 {
+            self.try_shrink_or_rebuild(hash_table, prolonged_guard);
+        } else {
+            drop(self);
         }
 
         if next_index == len {
@@ -1650,7 +1643,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         next_entry
     }
 
-    /// Returns a [`LockedBucket`] owning the next entry synchronously.
+    /// Returns a [`LockedBucket`] owning the next bucket synchronously.
     #[inline]
     pub(super) fn next_sync<'h, H, T: HashTable<K, V, H, L, TYPE>>(
         self,
@@ -1665,13 +1658,13 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
             return Some(self);
         }
 
-        let try_shrink = self.writer.len() == 0;
         let next_index = self.bucket_index + 1;
         let len = self.bucket_array().len();
-        drop(self);
 
-        if try_shrink {
-            hash_table.entry_removed(next_index - 1, guard);
+        if self.writer.len() == 0 {
+            self.try_shrink_or_rebuild(hash_table, guard);
+        } else {
+            drop(self);
         }
 
         if next_index == len {

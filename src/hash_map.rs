@@ -1369,10 +1369,7 @@ where
     }
 }
 
-impl<K, V> HashMap<K, V, RandomState>
-where
-    K: Eq + Hash,
-{
+impl<K, V> HashMap<K, V, RandomState> {
     /// Creates an empty default [`HashMap`].
     ///
     /// # Examples

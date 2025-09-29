@@ -1036,10 +1036,7 @@ where
     }
 }
 
-impl<K, V> HashCache<K, V, RandomState>
-where
-    K: Eq + Hash,
-{
+impl<K, V> HashCache<K, V, RandomState> {
     /// Creates an empty default [`HashCache`].
     ///
     /// The maximum capacity is set to [`DEFAULT_MAXIMUM_CAPACITY`].
