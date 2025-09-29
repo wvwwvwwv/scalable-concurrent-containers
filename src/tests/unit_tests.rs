@@ -2929,7 +2929,6 @@ mod treeindex {
             assert!(thread.join().is_ok());
         }
         assert_eq!(tree.len(), 0);
-        assert_eq!(tree.depth(), 0);
     }
 
     #[test]

@@ -30,9 +30,14 @@ static OOM_TEST: AtomicBool = const { AtomicBool::new(false) };
 static IN_PANIC: AtomicBool = const { AtomicBool::new(false) };
 
 fn panic_if<F: FnOnce() -> bool>(f: F) {
-    if OOM_TEST.load(Relaxed) && !IN_PANIC.load(Relaxed) && f() {
-        IN_PANIC.store(true, Relaxed);
-        panic!("Emulate failure");
+    if OOM_TEST.load(Relaxed) && !IN_PANIC.load(Relaxed) {
+        IN_PANIC.swap(true, Relaxed);
+        if f() {
+            IN_PANIC.store(true, Relaxed);
+            panic!("Emulate failure");
+        } else {
+            IN_PANIC.store(false, Relaxed);
+        }
     }
 }
 

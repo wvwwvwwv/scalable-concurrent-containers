@@ -9,6 +9,7 @@ use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
 use crate::Comparable;
 use crate::async_helper::DeriveAsyncWait;
+use crate::exit_guard::ExitGuard;
 
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
 pub enum Node<K, V> {
@@ -196,10 +197,18 @@ where
     pub(super) fn split_root(
         root_ptr: Ptr<Node<K, V>>,
         root: &AtomicShared<Node<K, V>>,
-        key: K,
-        val: V,
+        mut key: K,
+        mut val: V,
         guard: &Guard,
     ) -> (K, V) {
+        let mut exit_guard = ExitGuard::new(true, |rollback| {
+            if rollback {
+                if let Some(old_root) = root_ptr.as_ref() {
+                    old_root.rollback(guard);
+                }
+            }
+        });
+
         // The fact that the `TreeIndex` calls this function means the root is full and locked.
         let mut new_root = Shared::new(Node::new_internal_node());
         if let (Some(Self::Internal(internal_node)), Some(old_root)) = (
@@ -216,9 +225,11 @@ where
                 &mut (),
                 guard,
             );
-            let Ok(InsertResult::Retry(key, val)) = result else {
+            let Ok(InsertResult::Retry(k, v)) = result else {
                 unreachable!()
             };
+            key = k;
+            val = v;
 
             // Updates the pointer before unlocking the root.
             match root.compare_exchange(
@@ -232,6 +243,9 @@ where
                     if let Some(Self::Internal(internal_node)) = new_root_ptr.as_ref() {
                         internal_node.finish_split();
                     }
+
+                    // The operation is successful.
+                    *exit_guard = false;
                     if let Some(old_root) = old_root {
                         old_root.commit(guard);
                     }
@@ -241,19 +255,10 @@ where
                     if let Some(Self::Internal(internal_node)) = new_root.as_deref() {
                         internal_node.finish_split();
                     }
-                    if let Some(old_root) = root_ptr.as_ref() {
-                        old_root.rollback(guard);
-                    }
                 }
             }
-            (key, val)
-        } else {
-            // The root has been cleared.
-            if let Some(old_root) = root_ptr.as_ref() {
-                old_root.rollback(guard);
-            }
-            (key, val)
         }
+        (key, val)
     }
 
     /// Cleans up or removes the current root node.
