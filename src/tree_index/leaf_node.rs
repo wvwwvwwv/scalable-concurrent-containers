@@ -51,14 +51,11 @@ pub(super) struct Locker<'n, K, V> {
 pub(super) enum RemoveRangeState {
     /// The maximum key of the node is less than the start bound of the range.
     Below,
-
     /// The maximum key of the node is contained in the range, but it is not clear whether the
     /// minimum key of the node is contained in the range.
     MaybeBelow,
-
     /// The maximum key and the minimum key of the node are contained in the range.
     FullyContained,
-
     /// The maximum key of the node is not contained in the range, but it is not clear whether
     /// the minimum key of the node is contained in the range.
     MaybeAbove,
@@ -116,7 +113,7 @@ impl<K, V> LeafNode<K, V> {
     #[inline]
     pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
         let waiter = || {
-            if self.latch.load(Acquire) == LOCKED.into() {
+            if self.latch.load(Acquire) == u8::from(LOCKED) {
                 // The `LeafNode` is being split or locked.
                 return Err(());
             }
@@ -133,26 +130,26 @@ impl<K, V> LeafNode<K, V> {
     /// Tries to lock the [`LeafNode`].
     fn try_lock(&self) -> bool {
         self.latch
-            .compare_exchange(Tag::None.into(), LOCKED.into(), Acquire, Relaxed)
+            .compare_exchange(Tag::None.into(), u8::from(LOCKED), Acquire, Relaxed)
             .is_ok()
     }
 
     /// Unlocks the [`LeafNode`].
     fn unlock(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
+        debug_assert_eq!(self.latch.load(Relaxed), u8::from(LOCKED));
         if let Err(prev) =
             self.latch
                 .compare_exchange(LOCKED.into(), Tag::None.into(), Release, Relaxed)
         {
-            debug_assert_eq!(prev, RETIRED.into());
+            debug_assert_eq!(prev, u8::from(RETIRED));
         }
         self.wait_queue.signal();
     }
 
     /// Retires itself.
     fn retire(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
-        self.latch.swap(RETIRED.into(), Release);
+        debug_assert_eq!(self.latch.load(Relaxed), u8::from(LOCKED));
+        self.latch.swap(u8::from(RETIRED), Release);
         self.wait_queue.signal();
     }
 }
@@ -336,8 +333,7 @@ where
                             | InsertResult::Retry(..) => return Ok(insert_result),
                             InsertResult::Full(k, v) | InsertResult::Retired(k, v) => {
                                 let split_result = self.split_leaf(
-                                    k,
-                                    v,
+                                    (k, v),
                                     Some(child_key),
                                     child_ptr,
                                     child,
@@ -394,8 +390,7 @@ where
                     }
                     InsertResult::Full(k, v) | InsertResult::Retired(k, v) => {
                         let split_result = self.split_leaf(
-                            k,
-                            v,
+                            (k, v),
                             None,
                             unbounded_ptr,
                             &self.unbounded_child,
@@ -821,11 +816,10 @@ where
     /// # Errors
     ///
     /// Returns an error if a retry is required.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     fn split_leaf<D: DeriveAsyncWait>(
         &self,
-        key: K,
-        val: V,
+        entry: (K, V),
         full_leaf_key: Option<&K>,
         full_leaf_ptr: Ptr<Leaf<K, V>>,
         full_leaf: &AtomicShared<Leaf<K, V>>,
@@ -834,15 +828,13 @@ where
     ) -> Result<InsertResult<K, V>, (K, V)> {
         if !self.try_lock() {
             self.wait(async_wait);
-            return Err((key, val));
-        }
-        if self.retired() {
+            return Err(entry);
+        } else if self.retired() {
             self.unlock();
-            return Ok(InsertResult::Retired(key, val));
-        }
-        if full_leaf_ptr != full_leaf.load(Relaxed, guard) {
+            return Ok(InsertResult::Retired(entry.0, entry.1));
+        } else if full_leaf_ptr != full_leaf.load(Relaxed, guard) {
             self.unlock();
-            return Err((key, val));
+            return Err(entry);
         }
 
         let prev = self
@@ -859,7 +851,7 @@ where
         }
 
         let target = full_leaf_ptr.as_ref().unwrap();
-        let mut low_key_leaf_shared = None;
+        let mut low_key_leaf_shared = Shared::new(Leaf::new());
         let mut high_key_leaf_shared = None;
 
         // Distribute entries to two leaves after make the target retired.
@@ -872,21 +864,12 @@ where
         });
         target.freeze_and_distribute(&mut low_key_leaf_shared, &mut high_key_leaf_shared);
 
-        if let Some(low_key_leaf) = low_key_leaf_shared.take() {
-            self.split_op
-                .low_key_leaf
-                .swap((Some(low_key_leaf), Tag::None), Relaxed);
-            if let Some(high_key_leaf) = high_key_leaf_shared.take() {
-                self.split_op
-                    .high_key_leaf
-                    .swap((Some(high_key_leaf), Tag::None), Relaxed);
-            }
-        } else {
-            // No valid keys in the full leaf.
-            self.split_op
-                .low_key_leaf
-                .swap((Some(Shared::new(Leaf::new())), Tag::None), Relaxed);
-        }
+        self.split_op
+            .low_key_leaf
+            .swap((Some(low_key_leaf_shared), Tag::None), Relaxed);
+        self.split_op
+            .high_key_leaf
+            .swap((high_key_leaf_shared.take(), Tag::None), Relaxed);
 
         // When a new leaf is added to the linked list, the leaf is marked to let `Scanners`
         // acknowledge that the newly added leaf may contain keys that are smaller than those
@@ -926,7 +909,7 @@ where
                     let frozen = high_key_leaf.freeze();
                     debug_assert!(frozen);
                     *exit_guard = false;
-                    return Ok(InsertResult::Full(key, val));
+                    return Ok(InsertResult::Full(entry.0, entry.1));
                 }
             }
 
@@ -977,7 +960,7 @@ where
         unused_leaf.map(Shared::release);
 
         // Since a new leaf has been inserted, the caller can retry.
-        Ok(InsertResult::Retry(key, val))
+        Ok(InsertResult::Retry(entry.0, entry.1))
     }
 
     /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.

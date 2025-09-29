@@ -311,8 +311,7 @@ where
                             | InsertResult::Frozen(..) => return Ok(insert_result),
                             InsertResult::Full(k, v) => {
                                 let split_result = self.split_node(
-                                    k,
-                                    v,
+                                    (k, v),
                                     Some(child_key),
                                     child_ptr,
                                     child,
@@ -364,8 +363,7 @@ where
                     | InsertResult::Frozen(..) => return Ok(insert_result),
                     InsertResult::Full(k, v) => {
                         let split_result = self.split_node(
-                            k,
-                            v,
+                            (k, v),
                             None,
                             unbounded_ptr,
                             &self.unbounded_child,
@@ -619,8 +617,7 @@ where
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) fn split_node<D: DeriveAsyncWait>(
         &self,
-        key: K,
-        val: V,
+        entry: (K, V),
         full_node_key: Option<&K>,
         full_node_ptr: Ptr<Node<K, V>>,
         full_node: &AtomicShared<Node<K, V>>,
@@ -632,14 +629,14 @@ where
         if !self.try_lock() {
             target.rollback(guard);
             self.wait(async_wait);
-            return Err((key, val));
+            return Err(entry);
         }
         debug_assert!(!self.retired());
 
         if full_node_ptr != full_node.load(Relaxed, guard) {
             self.unlock();
             target.rollback(guard);
-            return Err((key, val));
+            return Err(entry);
         }
 
         let prev = self
@@ -894,7 +891,7 @@ where
             InsertResult::Full(..) | InsertResult::Retired(..) => {
                 // Insertion failed: expects that the parent splits this node.
                 *exit_guard = false;
-                return Ok(InsertResult::Full(key, val));
+                return Ok(InsertResult::Full(entry.0, entry.1));
             }
         }
         *exit_guard = false;
@@ -912,7 +909,7 @@ where
 
         if root_split {
             // Return without unlocking it.
-            return Ok(InsertResult::Retry(key, val));
+            return Ok(InsertResult::Retry(entry.0, entry.1));
         }
 
         // Unlock the node.
@@ -926,7 +923,7 @@ where
         }
 
         // Since a new node has been inserted, the caller can retry.
-        Ok(InsertResult::Retry(key, val))
+        Ok(InsertResult::Retry(entry.0, entry.1))
     }
 
     /// Finishes splitting the [`InternalNode`].

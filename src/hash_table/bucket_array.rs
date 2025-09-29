@@ -142,12 +142,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         (self.sample_size_mask + 1) as usize
     }
 
-    /// Returns the recommended sampling size.
-    #[inline]
-    pub(crate) fn full_sample_size(&self) -> usize {
-        (self.sample_size() * self.sample_size()).min(self.len())
-    }
-
     /// Returns a reference to a [`Bucket`] at the given position.
     #[inline]
     pub(crate) const fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
@@ -160,6 +154,12 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     pub(crate) const fn data_block(&self, index: usize) -> NonNull<DataBlock<K, V, BUCKET_LEN>> {
         debug_assert!(index < self.len());
         unsafe { self.data_blocks.add(index) }
+    }
+
+    /// Returns the recommended sampling size.
+    #[inline]
+    pub(crate) fn full_sample_size(&self) -> usize {
+        (self.sample_size() * self.sample_size()).min(self.len())
     }
 
     /// Returns `true` if the old array exists.

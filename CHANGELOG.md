@@ -8,6 +8,7 @@
 * API update: `hash_index::OccupiedEntry::update` does not consume itself.
 * API update: add `HashSet::replace_{async|sync}`.
 * Minor memory usage optimization.
+* Fix a data race between `TreeIndex::clear` and `TreeIndex::insert*`.
 
 3.1.2
 

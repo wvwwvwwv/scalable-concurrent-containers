@@ -2364,7 +2364,7 @@ mod treeindex {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let num_threads = 3;
-        let num_iter = if cfg!(miri) { 1 } else { 8 };
+        let num_iter = if cfg!(miri) { 1 } else { 16 };
         let workload_size = if cfg!(miri) { 32 } else { 1024 };
         let tree: Arc<TreeIndex<usize, R>> = Arc::new(TreeIndex::default());
         let mut threads = Vec::with_capacity(num_threads);

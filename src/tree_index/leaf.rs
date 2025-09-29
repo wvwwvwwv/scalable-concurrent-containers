@@ -252,14 +252,35 @@ impl<K, V> Leaf<K, V> {
         ) - DIMENSION.num_entries / 2
     }
 
-    fn key_at(&self, index: usize) -> &K {
+    /// Returns a reference to the key at the given index.
+    const fn key_at(&self, index: usize) -> &K {
         unsafe { &*(*self.entry_array.get()).0[index].as_ptr() }
     }
 
-    fn value_at(&self, index: usize) -> &V {
+    /// Returns a reference to the key at the given index.
+    const fn value_at(&self, index: usize) -> &V {
         unsafe { &*(*self.entry_array.get()).1[index].as_ptr() }
     }
 
+    /// Writes the key and value at the given index.
+    const fn write(&self, index: usize, key: K, val: V) {
+        unsafe {
+            (*self.entry_array.get()).0[index].as_mut_ptr().write(key);
+            (*self.entry_array.get()).1[index].as_mut_ptr().write(val);
+        }
+    }
+
+    /// Takes the key and value at the given index.
+    const fn take(&self, index: usize) -> (K, V) {
+        unsafe {
+            (
+                (*self.entry_array.get()).0[index].as_ptr().read(),
+                (*self.entry_array.get()).1[index].as_ptr().read(),
+            )
+        }
+    }
+
+    /// Rolls back the insertion at the given index.
     fn rollback(&self, index: usize) -> InsertResult<K, V> {
         let (key, val) = self.take(index);
         let result = self
@@ -272,22 +293,6 @@ impl<K, V> Leaf<K, V> {
             InsertResult::Frozen(key, val)
         } else {
             InsertResult::Duplicate(key, val)
-        }
-    }
-
-    fn take(&self, index: usize) -> (K, V) {
-        unsafe {
-            (
-                (*self.entry_array.get()).0[index].as_ptr().read(),
-                (*self.entry_array.get()).1[index].as_ptr().read(),
-            )
-        }
-    }
-
-    fn write(&self, index: usize, key: K, val: V) {
-        unsafe {
-            (*self.entry_array.get()).0[index].as_mut_ptr().write(key);
-            (*self.entry_array.get()).1[index].as_mut_ptr().write(val);
         }
     }
 
@@ -468,7 +473,7 @@ where
 
     /// Removes a range of entries.
     ///
-    /// Returns the number of remaining children.
+    /// Returns the number of remaining entries.
     #[inline]
     pub(super) fn remove_range<Q, R: RangeBounds<Q>>(&self, range: &R)
     where
@@ -601,7 +606,7 @@ where
     #[inline]
     pub(super) fn freeze_and_distribute(
         &self,
-        low_key_leaf: &mut Option<Shared<Leaf<K, V>>>,
+        low_key_leaf: &mut Shared<Leaf<K, V>>,
         high_key_leaf: &mut Option<Shared<Leaf<K, V>>>,
     ) {
         let metadata = unsafe {
@@ -624,9 +629,7 @@ where
         };
         for (i, (k, v)) in scanner.enumerate() {
             if i < boundary {
-                low_key_leaf
-                    .get_or_insert_with(|| Shared::new(Leaf::new()))
-                    .insert_unchecked(k.clone(), v.clone(), i);
+                low_key_leaf.insert_unchecked(k.clone(), v.clone(), i);
             } else {
                 high_key_leaf
                     .get_or_insert_with(|| Shared::new(Leaf::new()))
@@ -760,8 +763,7 @@ impl<K, V> LinkedList for Leaf<K, V> {
 }
 
 unsafe impl<K: Send, V: Send> Send for Leaf<K, V> {}
-
-unsafe impl<K: Sync, V: Sync> Sync for Leaf<K, V> {}
+unsafe impl<K: Send + Sync, V: Send + Sync> Sync for Leaf<K, V> {}
 
 impl Dimension {
     /// Checks if the [`Leaf`] is frozen.
@@ -882,7 +884,7 @@ impl<'l, K, V> Scanner<'l, K, V> {
 
     /// Returns a reference to the entry that the scanner is currently pointing to.
     #[inline]
-    pub(super) fn get(&self) -> Option<(&'l K, &'l V)> {
+    pub(super) const fn get(&self) -> Option<(&'l K, &'l V)> {
         if self.entry_index >= DIMENSION.num_entries {
             return None;
         }
@@ -934,6 +936,7 @@ impl<'l, K, V> Scanner<'l, K, V> {
         None
     }
 
+    /// Proceeds to the next entry.
     fn proceed(&mut self) {
         if self.entry_index == usize::MAX {
             return;
@@ -1131,17 +1134,11 @@ mod test {
         assert!(matches!(leaf.insert(11, 17), InsertResult::Success));
         assert!(matches!(leaf.insert(17, 11), InsertResult::Success));
 
-        let mut leaf1 = None;
+        let mut leaf1 = Shared::new(Leaf::new());
         let mut leaf2 = None;
         leaf.freeze_and_distribute(&mut leaf1, &mut leaf2);
-        assert_eq!(
-            leaf1.as_ref().and_then(|l| l.search_entry(&11)),
-            Some((&11, &17))
-        );
-        assert_eq!(
-            leaf1.as_ref().and_then(|l| l.search_entry(&17)),
-            Some((&17, &11))
-        );
+        assert_eq!(leaf1.search_entry(&11), Some((&11, &17)));
+        assert_eq!(leaf1.search_entry(&17), Some((&17, &11)));
         assert!(leaf2.is_none());
         assert!(matches!(leaf.insert(1, 7), InsertResult::Frozen(..)));
         assert_eq!(leaf.remove_if(&17, &mut |_| true), RemoveResult::Frozen);

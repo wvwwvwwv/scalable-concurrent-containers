@@ -208,8 +208,7 @@ where
         ) {
             internal_node.unbounded_child = AtomicShared::from(old_root);
             let result = internal_node.split_node(
-                key,
-                val,
+                (key, val),
                 None,
                 root_ptr,
                 &internal_node.unbounded_child,
@@ -237,12 +236,12 @@ where
                         old_root.commit(guard);
                     }
                 }
-                Err((new_root, old_root_ptr)) => {
+                Err((new_root, _)) => {
                     // The root has been cleared.
                     if let Some(Self::Internal(internal_node)) = new_root.as_deref() {
                         internal_node.finish_split();
                     }
-                    if let Some(old_root) = old_root_ptr.as_ref() {
+                    if let Some(old_root) = root_ptr.as_ref() {
                         old_root.rollback(guard);
                     }
                 }
