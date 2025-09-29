@@ -103,25 +103,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         self.array_len
     }
 
-    /// Returns a non-null pointer to a [`Bucket`] at the given position.
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) const fn bucket_ptr(&self, index: usize) -> NonNull<Bucket<K, V, L, TYPE>> {
-        debug_assert!(index < self.len());
-        unsafe { self.buckets.add(index) }
-    }
-
-    /// Returns a non-null pointer to a [`DataBlock`] at the given position.
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) const fn data_block_ptr(
-        &self,
-        index: usize,
-    ) -> NonNull<DataBlock<K, V, BUCKET_LEN>> {
-        debug_assert!(index < self.len());
-        unsafe { self.data_blocks.add(index) }
-    }
-
     /// Returns the number of entry slots in the bucket array.
     #[inline]
     pub(crate) const fn num_slots(&self) -> usize {
@@ -169,16 +150,16 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 
     /// Returns a reference to a [`Bucket`] at the given position.
     #[inline]
-    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
+    pub(crate) const fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
         debug_assert!(index < self.len());
         unsafe { self.buckets.add(index).as_ref() }
     }
 
-    /// Returns a reference to a [`DataBlock`] at the given position.
+    /// Returns a pointer to a [`DataBlock`] at the given position.
     #[inline]
-    pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
+    pub(crate) const fn data_block(&self, index: usize) -> NonNull<DataBlock<K, V, BUCKET_LEN>> {
         debug_assert!(index < self.len());
-        unsafe { self.data_blocks.add(index).as_ref() }
+        unsafe { self.data_blocks.add(index) }
     }
 
     /// Returns `true` if the old array exists.

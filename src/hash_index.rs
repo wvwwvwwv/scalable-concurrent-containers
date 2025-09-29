@@ -14,10 +14,11 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use sdd::{AtomicShared, Guard, Shared};
 
 use super::Equivalent;
+use super::hash_table::HashTable;
 use super::hash_table::bucket::{Bucket, EntryPtr, INDEX};
 use super::hash_table::bucket_array::BucketArray;
-use super::hash_table::{HashTable, LockedEntry};
 use crate::async_helper::SendableGuard;
+use crate::hash_table::LockedBucket;
 
 /// Scalable concurrent hash index.
 ///
@@ -69,7 +70,8 @@ where
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
-    locked_entry: LockedEntry<'h, K, V, (), INDEX>,
+    locked_bucket: LockedBucket<K, V, (), INDEX>,
+    entry_ptr: EntryPtr<'h, K, V, INDEX>,
 }
 
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashIndex`].
@@ -80,7 +82,7 @@ where
     hashindex: &'h HashIndex<K, V, H>,
     key: K,
     hash: u64,
-    locked_entry: LockedEntry<'h, K, V, (), INDEX>,
+    locked_bucket: LockedBucket<K, V, (), INDEX>,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashIndex`] higher than a certain level.
@@ -255,31 +257,26 @@ where
     /// ```
     #[inline]
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
-        let sendable_guard = pin!(SendableGuard::default());
         let hash = self.hash(&key);
-
-        self.writer_async(hash, &sendable_guard, |writer, data_block, index, len| {
-            let guard = sendable_guard.guard();
-            let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, guard);
-            let locked_entry =
-                LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, guard)
-                    .prolong_lifetime(self);
-            if entry_ptr.is_valid() {
-                Entry::Occupied(OccupiedEntry {
-                    hashindex: self,
-                    locked_entry,
-                })
-            } else {
-                let vacant_entry = VacantEntry {
-                    hashindex: self,
-                    key,
-                    hash,
-                    locked_entry,
-                };
-                Entry::Vacant(vacant_entry)
-            }
-        })
-        .await
+        let sendable_guard = pin!(SendableGuard::default());
+        let locked_bucket = self.writer_async(hash, &sendable_guard).await;
+        let prolonged_guard = self.prolonged_guard_ref(sendable_guard.guard());
+        let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
+            Entry::Occupied(OccupiedEntry {
+                hashindex: self,
+                locked_bucket,
+                entry_ptr,
+            })
+        } else {
+            let vacant_entry = VacantEntry {
+                hashindex: self,
+                key,
+                hash,
+                locked_bucket,
+            };
+            Entry::Vacant(vacant_entry)
+        }
     }
 
     /// Gets the entry associated with the given key in the map for in-place manipulation.
@@ -305,26 +302,24 @@ where
     pub fn entry_sync(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
         let guard = Guard::new();
-        self.writer_sync(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, &guard);
-            let locked_entry =
-                LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
-                    .prolong_lifetime(self);
-            if entry_ptr.is_valid() {
-                Entry::Occupied(OccupiedEntry {
-                    hashindex: self,
-                    locked_entry,
-                })
-            } else {
-                let vacant_entry = VacantEntry {
-                    hashindex: self,
-                    key,
-                    hash,
-                    locked_entry,
-                };
-                Entry::Vacant(vacant_entry)
-            }
-        })
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        let locked_bucket = self.writer_sync(hash, prolonged_guard);
+        let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
+            Entry::Occupied(OccupiedEntry {
+                hashindex: self,
+                locked_bucket,
+                entry_ptr,
+            })
+        } else {
+            let vacant_entry = VacantEntry {
+                hashindex: self,
+                key,
+                hash,
+                locked_bucket,
+            };
+            Entry::Vacant(vacant_entry)
+        }
     }
 
     /// Tries to get the entry associated with the given key in the map for in-place manipulation.
@@ -343,20 +338,23 @@ where
     /// ```
     #[inline]
     pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {
-        let guard = Guard::new();
         let hash = self.hash(&key);
-        let locked_entry = self.try_reserve_entry(&key, hash, self.prolonged_guard_ref(&guard))?;
-        if locked_entry.entry_ptr.is_valid() {
+        let guard = Guard::new();
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        let locked_bucket = self.try_reserve_bucket(hash, prolonged_guard)?;
+        let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
             Some(Entry::Occupied(OccupiedEntry {
                 hashindex: self,
-                locked_entry,
+                locked_bucket,
+                entry_ptr,
             }))
         } else {
             Some(Entry::Vacant(VacantEntry {
                 hashindex: self,
                 key,
                 hash,
-                locked_entry,
+                locked_bucket,
             }))
         }
     }
@@ -425,24 +423,21 @@ where
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
         let sendable_guard = pin!(SendableGuard::default());
         let mut entry = None;
-
-        self.for_each_writer_async(0, 0, &sendable_guard, |writer, data_block, index, len| {
-            let guard = sendable_guard.guard();
+        self.for_each_writer_async(0, 0, &sendable_guard, |locked_bucket| {
+            let guard = self.prolonged_guard_ref(sendable_guard.guard());
             let mut entry_ptr = EntryPtr::new(guard);
-            while entry_ptr.move_to_next(&writer, guard) {
-                let (k, v) = entry_ptr.get(data_block);
+            while entry_ptr.move_to_next(&locked_bucket.writer, guard) {
+                let (k, v) = locked_bucket.entry(&entry_ptr);
                 if pred(k, v) {
-                    let locked_entry =
-                        LockedEntry::new(writer, data_block, entry_ptr, index, len, guard)
-                            .prolong_lifetime(self);
                     entry = Some(OccupiedEntry {
                         hashindex: self,
-                        locked_entry,
+                        locked_bucket,
+                        entry_ptr,
                     });
-                    return (true, false);
+                    return true;
                 }
             }
-            (false, false)
+            false
         })
         .await;
         entry
@@ -470,22 +465,21 @@ where
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
         let mut entry = None;
         let guard = Guard::new();
-        self.for_each_writer_sync(0, 0, &guard, |writer, data_block, index, len| {
-            let mut entry_ptr = EntryPtr::new(&guard);
-            while entry_ptr.move_to_next(&writer, &guard) {
-                let (k, v) = entry_ptr.get(data_block);
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        self.for_each_writer_sync(0, 0, prolonged_guard, |locked_bucket| {
+            let mut entry_ptr = EntryPtr::new(prolonged_guard);
+            while entry_ptr.move_to_next(&locked_bucket.writer, prolonged_guard) {
+                let (k, v) = locked_bucket.entry(&entry_ptr);
                 if pred(k, v) {
-                    let locked_entry =
-                        LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
-                            .prolong_lifetime(self);
                     entry = Some(OccupiedEntry {
                         hashindex: self,
-                        locked_entry,
+                        locked_bucket,
+                        entry_ptr,
                     });
-                    return (true, false);
+                    return true;
                 }
             }
-            (false, false)
+            false
         });
         entry
     }
@@ -510,23 +504,17 @@ where
     /// ```
     #[inline]
     pub async fn insert_async(&self, key: K, val: V) -> Result<(), (K, V)> {
-        let sendable_guard = pin!(SendableGuard::default());
         let hash = self.hash(&key);
-
-        self.writer_async(hash, &sendable_guard, |writer, data_block, _, _| {
-            let guard = sendable_guard.guard();
-            let partial_hash = hash;
-            if writer
-                .get_entry_ptr(data_block, &key, partial_hash, guard)
-                .is_valid()
-            {
-                Err((key, val))
-            } else {
-                writer.insert_with(data_block, partial_hash, || (key, val), guard);
-                Ok(())
-            }
-        })
-        .await
+        let sendable_guard = pin!(SendableGuard::default());
+        let locked_bucket = self.writer_async(hash, &sendable_guard).await;
+        let guard = sendable_guard.guard();
+        let partial_hash = hash;
+        if locked_bucket.search(&key, hash, guard).is_valid() {
+            Err((key, val))
+        } else {
+            locked_bucket.insert(partial_hash, (key, val), guard);
+            Ok(())
+        }
     }
 
     /// Inserts a key-value pair into the [`HashIndex`].
@@ -553,18 +541,15 @@ where
     pub fn insert_sync(&self, key: K, val: V) -> Result<(), (K, V)> {
         let hash = self.hash(&key);
         let guard = Guard::new();
-        self.writer_sync(hash, &guard, |writer, data_block, _, _| {
-            let partial_hash = hash;
-            if writer
-                .get_entry_ptr(data_block, &key, partial_hash, &guard)
-                .is_valid()
-            {
-                Err((key, val))
-            } else {
-                writer.insert_with(data_block, partial_hash, || (key, val), &guard);
-                Ok(())
-            }
-        })
+        let locked_bucket = self.writer_sync(hash, &guard);
+        if locked_bucket.search(&key, hash, &guard).is_valid() {
+            Err((key, val))
+        } else {
+            locked_bucket
+                .writer
+                .insert(locked_bucket.data_block, hash, (key, val), &guard);
+            Ok(())
+        }
     }
 
     /// Removes a key-value pair if the key exists.
@@ -638,21 +623,19 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let sendable_guard = pin!(SendableGuard::default());
         let hash = self.hash(key);
-
-        self.optional_writer_async(hash, &sendable_guard, |writer, data_block, _, _| {
-            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, sendable_guard.guard());
-            if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
-                writer.mark_removed(&mut entry_ptr, sendable_guard.guard());
-                (true, writer.need_rebuild())
-            } else {
-                (false, false)
-            }
-        })
-        .await
-        .ok()
-        .is_some_and(|removed| removed)
+        let sendable_guard = pin!(SendableGuard::default());
+        let Some(mut locked_bucket) = self.optional_writer_async(hash, &sendable_guard).await
+        else {
+            return false;
+        };
+        let mut entry_ptr = locked_bucket.search(key, hash, sendable_guard.guard());
+        if entry_ptr.is_valid() && condition(&mut locked_bucket.entry_mut(&mut entry_ptr).1) {
+            locked_bucket.mark_removed(self, &mut entry_ptr, sendable_guard.guard());
+            true
+        } else {
+            false
+        }
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -680,17 +663,16 @@ where
     {
         let hash = self.hash(key);
         let guard = Guard::default();
-        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
-            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
-            if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
-                writer.mark_removed(&mut entry_ptr, &guard);
-                (true, writer.need_rebuild())
-            } else {
-                (false, false)
-            }
-        })
-        .ok()
-        .is_some_and(|removed| removed)
+        let Some(mut locked_bucket) = self.optional_writer_sync(hash, &guard) else {
+            return false;
+        };
+        let mut entry_ptr = locked_bucket.search(key, hash, &guard);
+        if entry_ptr.is_valid() && condition(&mut locked_bucket.entry_mut(&mut entry_ptr).1) {
+            locked_bucket.mark_removed(self, &mut entry_ptr, &guard);
+            true
+        } else {
+            false
+        }
     }
 
     /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
@@ -714,29 +696,19 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let sendable_guard = pin!(SendableGuard::default());
         let hash = self.hash(key);
-
-        self.optional_writer_async(hash, &sendable_guard, |writer, data_block, index, len| {
-            let guard = sendable_guard.guard();
-            let entry_ptr = writer.get_entry_ptr(data_block, key, hash, guard);
-            if entry_ptr.is_valid() {
-                let locked_entry =
-                    LockedEntry::new(writer, data_block, entry_ptr, index, len, guard)
-                        .prolong_lifetime(self);
-                return (
-                    Some(OccupiedEntry {
-                        hashindex: self,
-                        locked_entry,
-                    }),
-                    false,
-                );
-            }
-            (None, false)
-        })
-        .await
-        .ok()
-        .flatten()
+        let sendable_guard = pin!(SendableGuard::default());
+        let locked_bucket = self.optional_writer_async(hash, &sendable_guard).await?;
+        let guard = self.prolonged_guard_ref(sendable_guard.guard());
+        let entry_ptr = locked_bucket.search(key, hash, guard);
+        if entry_ptr.is_valid() {
+            return Some(OccupiedEntry {
+                hashindex: self,
+                locked_bucket,
+                entry_ptr,
+            });
+        }
+        None
     }
 
     /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
@@ -764,25 +736,18 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
-        let guard = Guard::default();
-        self.optional_writer_sync(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
-            if entry_ptr.is_valid() {
-                let locked_entry =
-                    LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
-                        .prolong_lifetime(self);
-                return (
-                    Some(OccupiedEntry {
-                        hashindex: self,
-                        locked_entry,
-                    }),
-                    false,
-                );
-            }
-            (None, false)
-        })
-        .ok()
-        .flatten()
+        let guard = Guard::new();
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        let locked_bucket = self.optional_writer_sync(hash, prolonged_guard)?;
+        let entry_ptr = locked_bucket.search(key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
+            return Some(OccupiedEntry {
+                hashindex: self,
+                locked_bucket,
+                entry_ptr,
+            });
+        }
+        None
     }
 
     /// Returns a guarded reference to the value for the specified key without acquiring locks.
@@ -905,7 +870,6 @@ where
     pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let sendable_guard = pin!(SendableGuard::default());
         let mut result = true;
-
         self.for_each_reader_async(&sendable_guard, |reader, data_block| {
             let guard = sendable_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
@@ -983,19 +947,21 @@ where
     #[inline]
     pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
         let sendable_guard = pin!(SendableGuard::default());
-
-        self.for_each_writer_async(0, 0, &sendable_guard, |writer, data_block, _, _| {
+        self.for_each_writer_async(0, 0, &sendable_guard, |mut locked_bucket| {
             let mut removed = false;
             let guard = sendable_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
-            while entry_ptr.move_to_next(&writer, guard) {
-                let (k, v) = entry_ptr.get_mut(data_block, &writer);
+            while entry_ptr.move_to_next(&locked_bucket.writer, guard) {
+                let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
                 if !pred(k, v) {
-                    writer.mark_removed(&mut entry_ptr, guard);
+                    locked_bucket.writer.mark_removed(&mut entry_ptr, guard);
                     removed = true;
                 }
             }
-            (false, removed)
+            if removed {
+                locked_bucket.try_shrink_or_rebuild(self, guard);
+            }
+            false
         })
         .await;
     }
@@ -1026,17 +992,20 @@ where
     #[inline]
     pub fn retain_sync<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
         let guard = Guard::new();
-        self.for_each_writer_sync(0, 0, &guard, |writer, data_block, _, _| {
+        self.for_each_writer_sync(0, 0, &guard, |mut locked_bucket| {
             let mut removed = false;
             let mut entry_ptr = EntryPtr::new(&guard);
-            while entry_ptr.move_to_next(&writer, &guard) {
-                let (k, v) = entry_ptr.get_mut(data_block, &writer);
+            while entry_ptr.move_to_next(&locked_bucket.writer, &guard) {
+                let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
                 if !pred(k, v) {
-                    writer.mark_removed(&mut entry_ptr, &guard);
+                    locked_bucket.writer.mark_removed(&mut entry_ptr, &guard);
                     removed = true;
                 }
             }
-            (false, removed)
+            if removed {
+                locked_bucket.try_shrink_or_rebuild(self, &guard);
+            }
+            false
         });
     }
 
@@ -1576,11 +1545,7 @@ where
     #[inline]
     #[must_use]
     pub fn key(&self) -> &K {
-        &self
-            .locked_entry
-            .entry_ptr
-            .get(self.locked_entry.data_block)
-            .0
+        &self.locked_bucket.entry(&self.entry_ptr).0
     }
 
     /// Marks that the entry is removed from the [`HashIndex`].
@@ -1603,14 +1568,9 @@ where
     #[inline]
     pub fn remove_entry(mut self) {
         let guard = Guard::new();
-        self.locked_entry.writer.mark_removed(
-            &mut self.locked_entry.entry_ptr,
-            self.hashindex.prolonged_guard_ref(&guard),
-        );
-        let hashindex = self.hashindex;
-        let index = self.locked_entry.index;
-        drop(self);
-        hashindex.entry_removed(index, &guard);
+        let prolonged_guard = self.hashindex.prolonged_guard_ref(&guard);
+        self.locked_bucket
+            .mark_removed(self.hashindex, &mut self.entry_ptr, prolonged_guard);
     }
 
     /// Gets a reference to the value in the entry.
@@ -1632,11 +1592,7 @@ where
     #[inline]
     #[must_use]
     pub fn get(&self) -> &V {
-        &self
-            .locked_entry
-            .entry_ptr
-            .get(self.locked_entry.data_block)
-            .1
+        &self.locked_bucket.entry(&self.entry_ptr).1
     }
 
     /// Gets a mutable reference to the value in the entry.
@@ -1668,11 +1624,7 @@ where
     /// ```
     #[inline]
     pub unsafe fn get_mut(&mut self) -> &mut V {
-        &mut self
-            .locked_entry
-            .entry_ptr
-            .get_mut(self.locked_entry.data_block, &self.locked_entry.writer)
-            .1
+        &mut self.locked_bucket.entry_mut(&mut self.entry_ptr).1
     }
 
     /// Gets the next closest occupied entry after removing the entry.
@@ -1695,17 +1647,23 @@ where
     /// let second_entry_future = hashindex.begin_sync().unwrap().remove_and_async();
     /// ```
     #[inline]
-    pub async fn remove_and_async(mut self) -> Option<OccupiedEntry<'h, K, V, H>> {
-        let guard = Guard::new();
-        self.locked_entry.writer.mark_removed(
-            &mut self.locked_entry.entry_ptr,
-            self.hashindex.prolonged_guard_ref(&guard),
-        );
+    pub async fn remove_and_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let hashindex = self.hashindex;
-        if let Some(locked_entry) = self.locked_entry.next_async(hashindex).await {
+        let mut entry_ptr = self.entry_ptr.clone();
+        let mut sendable_guard = pin!(SendableGuard::default());
+        self.locked_bucket.writer.mark_removed(
+            &mut entry_ptr,
+            hashindex.prolonged_guard_ref(sendable_guard.guard()),
+        );
+        if let Some(locked_bucket) = self
+            .locked_bucket
+            .next_async(hashindex, &mut entry_ptr, &mut sendable_guard)
+            .await
+        {
             return Some(OccupiedEntry {
                 hashindex,
-                locked_entry,
+                locked_bucket,
+                entry_ptr,
             });
         }
         None
@@ -1741,17 +1699,22 @@ where
     /// ```
     #[inline]
     #[must_use]
-    pub fn remove_and_sync(mut self) -> Option<Self> {
-        let guard = Guard::new();
-        self.locked_entry.writer.mark_removed(
-            &mut self.locked_entry.entry_ptr,
-            self.hashindex.prolonged_guard_ref(&guard),
-        );
+    pub fn remove_and_sync(self) -> Option<Self> {
         let hashindex = self.hashindex;
-        if let Some(locked_entry) = self.locked_entry.next_sync(hashindex) {
+        let mut entry_ptr = self.entry_ptr.clone();
+        let guard = Guard::new();
+        let prolonged_guard = hashindex.prolonged_guard_ref(&guard);
+        self.locked_bucket
+            .writer
+            .mark_removed(&mut entry_ptr, prolonged_guard);
+        if let Some(locked_bucket) =
+            self.locked_bucket
+                .next_sync(hashindex, &mut entry_ptr, prolonged_guard)
+        {
             return Some(OccupiedEntry {
                 hashindex,
-                locked_entry,
+                locked_bucket,
+                entry_ptr,
             });
         }
         None
@@ -1779,10 +1742,17 @@ where
     #[inline]
     pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let hashindex = self.hashindex;
-        if let Some(locked_entry) = self.locked_entry.next_async(hashindex).await {
+        let mut entry_ptr = self.entry_ptr.clone();
+        let mut sendable_guard = pin!(SendableGuard::default());
+        if let Some(locked_bucket) = self
+            .locked_bucket
+            .next_async(hashindex, &mut entry_ptr, &mut sendable_guard)
+            .await
+        {
             return Some(OccupiedEntry {
                 hashindex,
-                locked_entry,
+                locked_bucket,
+                entry_ptr,
             });
         }
         None
@@ -1817,10 +1787,17 @@ where
     #[must_use]
     pub fn next_sync(self) -> Option<Self> {
         let hashindex = self.hashindex;
-        if let Some(locked_entry) = self.locked_entry.next_sync(hashindex) {
+        let mut entry_ptr = self.entry_ptr.clone();
+        let guard = Guard::new();
+        let prolonged_guard = hashindex.prolonged_guard_ref(&guard);
+        if let Some(locked_bucket) =
+            self.locked_bucket
+                .next_sync(hashindex, &mut entry_ptr, prolonged_guard)
+        {
             return Some(OccupiedEntry {
                 hashindex,
-                locked_entry,
+                locked_bucket,
+                entry_ptr,
             });
         }
         None
@@ -1847,28 +1824,24 @@ where
     ///
     /// if let Entry::Occupied(mut o) = hashindex.entry_sync(37) {
     ///     o.update(29);
+    ///     assert_eq!(o.get(), &29);
     /// }
     ///
     /// assert_eq!(hashindex.peek_with(&37, |_, v| *v), Some(29));
     /// ```
     #[inline]
-    pub fn update(mut self, val: V) {
+    pub fn update(&mut self, val: V) {
         let key = self.key().clone();
-        let partial_hash = self
-            .locked_entry
-            .entry_ptr
-            .partial_hash(&self.locked_entry.writer);
+        let partial_hash = self.entry_ptr.partial_hash(&self.locked_bucket.writer);
         let guard = Guard::new();
-        self.locked_entry.writer.insert_with(
-            self.locked_entry.data_block,
-            u64::from(partial_hash),
-            || (key, val),
-            self.hashindex.prolonged_guard_ref(&guard),
-        );
-        self.locked_entry.writer.mark_removed(
-            &mut self.locked_entry.entry_ptr,
-            self.hashindex.prolonged_guard_ref(&guard),
-        );
+        let prolonged_guard = self.hashindex.prolonged_guard_ref(&guard);
+        let entry_ptr =
+            self.locked_bucket
+                .insert(u64::from(partial_hash), (key, val), prolonged_guard);
+        self.locked_bucket
+            .writer
+            .mark_removed(&mut self.entry_ptr, prolonged_guard);
+        self.entry_ptr = entry_ptr;
     }
 }
 
@@ -1960,21 +1933,14 @@ where
     #[inline]
     pub fn insert_entry(self, val: V) -> OccupiedEntry<'h, K, V, H> {
         let guard = Guard::new();
-        let entry_ptr = self.locked_entry.writer.insert_with(
-            self.locked_entry.data_block,
-            self.hash,
-            || (self.key, val),
-            self.hashindex.prolonged_guard_ref(&guard),
-        );
+        let prolonged_guard = self.hashindex.prolonged_guard_ref(&guard);
+        let entry_ptr = self
+            .locked_bucket
+            .insert(self.hash, (self.key, val), prolonged_guard);
         OccupiedEntry {
             hashindex: self.hashindex,
-            locked_entry: LockedEntry {
-                index: self.locked_entry.index,
-                data_block: self.locked_entry.data_block,
-                writer: self.locked_entry.writer,
-                entry_ptr,
-                len: 0,
-            },
+            locked_bucket: self.locked_bucket,
+            entry_ptr,
         }
     }
 }

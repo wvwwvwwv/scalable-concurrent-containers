@@ -2,6 +2,7 @@ use std::cell::UnsafeCell;
 use std::fmt::{self, Debug};
 use std::mem::{MaybeUninit, forget, needs_drop};
 use std::ops::{Deref, Index};
+use std::ptr::{NonNull, from_ref};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
 
@@ -47,13 +48,15 @@ pub const BUCKET_LEN: usize = u32::BITS as usize;
 pub struct DataBlock<K, V, const LEN: usize>([UnsafeCell<MaybeUninit<(K, V)>>; LEN]);
 
 /// [`Writer`] holds an exclusive lock on a [`Bucket`].
-pub struct Writer<'g, K, V, L: LruList, const TYPE: char> {
-    bucket: &'g Bucket<K, V, L, TYPE>,
+#[derive(Debug)]
+pub struct Writer<K, V, L: LruList, const TYPE: char> {
+    bucket: NonNull<Bucket<K, V, L, TYPE>>,
 }
 
 /// [`Reader`] holds a shared lock on a [`Bucket`].
-pub struct Reader<'g, K, V, L: LruList, const TYPE: char> {
-    bucket: &'g Bucket<K, V, L, TYPE>,
+#[derive(Debug)]
+pub struct Reader<K, V, L: LruList, const TYPE: char> {
+    bucket: NonNull<Bucket<K, V, L, TYPE>>,
 }
 
 /// [`EntryPtr`] points to an entry slot in a [`Bucket`].
@@ -135,11 +138,11 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Reserves memory for insertion and then constructs the key-value pair in-place.
     #[inline]
-    pub(crate) fn insert_with<'g, C: FnOnce() -> (K, V)>(
+    pub(crate) fn insert<'g>(
         &self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         hash: u64,
-        constructor: C,
+        entry: (K, V),
         guard: &'g Guard,
     ) -> EntryPtr<'g, K, V, TYPE> {
         let len = self.len.load(Relaxed);
@@ -148,15 +151,15 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
         let free_index = occupied_bitmap.trailing_ones() as usize;
         if free_index == BUCKET_LEN {
-            self.insert_overflow_with(len, hash, constructor, guard)
+            self.insert_overflow(len, hash, entry, guard)
         } else {
-            self.insert_entry_with(
+            self.insert_entry(
                 &self.metadata,
-                data_block,
+                unsafe { data_block.as_ref() },
                 free_index,
                 occupied_bitmap,
                 hash,
-                constructor,
+                entry,
             );
             self.len.store(len + 1, Relaxed);
             EntryPtr {
@@ -166,63 +169,11 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
     }
 
-    /// Inserts an entry into the linked list.
-    pub(crate) fn insert_overflow_with<'g, C: FnOnce() -> (K, V)>(
-        &self,
-        len: u32,
-        hash: u64,
-        constructor: C,
-        guard: &'g Guard,
-    ) -> EntryPtr<'g, K, V, TYPE> {
-        let mut link_ptr = self.metadata.link.load(Acquire, guard);
-        while let Some(link) = link_ptr.as_ref() {
-            let occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
-            let free_index = occupied_bitmap.trailing_ones() as usize;
-            if free_index != LINKED_BUCKET_LEN {
-                self.insert_entry_with(
-                    &link.metadata,
-                    &link.data_block,
-                    free_index,
-                    occupied_bitmap,
-                    hash,
-                    constructor,
-                );
-                self.len.store(len + 1, Relaxed);
-                return EntryPtr {
-                    current_link_ptr: link_ptr,
-                    current_index: free_index,
-                };
-            }
-            link_ptr = link.metadata.link.load(Acquire, guard);
-        }
-
-        // Insert a new `LinkedBucket` at the linked list head.
-        let head = self.metadata.link.get_shared(Relaxed, guard);
-        let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
-        let link_ptr = link.get_guarded_ptr(guard);
-        if let Some(link) = link_ptr.as_ref() {
-            self.write_data_block(&link.data_block, constructor(), 0);
-            self.write_cell(&link.metadata.partial_hash_array[0], |h| {
-                *h = Self::partial_hash(hash);
-            });
-            link.metadata.occupied_bitmap.store(1, Relaxed);
-        }
-        if let Some(head) = link.metadata.link.load(Relaxed, guard).as_ref() {
-            head.prev_link.store(link.as_ptr().cast_mut(), Relaxed);
-        }
-        self.metadata.link.swap((Some(link), Tag::None), Release);
-        self.len.store(len + 1, Relaxed);
-        EntryPtr {
-            current_link_ptr: link_ptr,
-            current_index: 0,
-        }
-    }
-
     /// Removes the entry pointed to by the supplied [`EntryPtr`].
     #[inline]
     pub(crate) fn remove<'g>(
         &self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
         guard: &'g Guard,
     ) -> (K, V) {
@@ -257,7 +208,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             self.metadata
                 .occupied_bitmap
                 .store(occupied_bitmap, Relaxed);
-            Self::read_data_block(data_block, entry_ptr.current_index)
+            Self::read_data_block(unsafe { data_block.as_ref() }, entry_ptr.current_index)
         }
     }
 
@@ -301,7 +252,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     #[inline]
     pub(crate) fn evict_lru_head(
         &self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
     ) -> Option<(K, V)> {
         debug_assert_eq!(TYPE, CACHE);
 
@@ -324,12 +275,14 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             self.metadata
                 .occupied_bitmap
                 .store(occupied_bitmap & !(1_u32 << evicted), Relaxed);
-            return Some(Self::read_data_block(data_block, evicted));
+            return Some(Self::read_data_block(
+                unsafe { data_block.as_ref() },
+                evicted,
+            ));
         }
 
         None
     }
-
     /// Sets the entry as having been just accessed.
     #[inline]
     pub(crate) fn update_lru_tail(&self, entry_ptr: &EntryPtr<K, V, TYPE>) {
@@ -383,28 +336,25 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// Extracts an entry from the given bucket and inserts the entry into itself.
     pub(crate) fn extract_from<'g>(
         &self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         hash: u64,
         from_writer: &Writer<K, V, L, TYPE>,
-        from_data_block: &DataBlock<K, V, BUCKET_LEN>,
+        from_data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         from_entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
         guard: &'g Guard,
     ) {
         debug_assert!(self.rw_lock.is_locked(Relaxed));
 
-        self.insert_with(
-            data_block,
-            hash,
-            || {
-                // Copy the data without modifying the original entry.
-                if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
-                    Self::read_data_block(&link.data_block, from_entry_ptr.current_index)
-                } else {
-                    Self::read_data_block(from_data_block, from_entry_ptr.current_index)
-                }
-            },
-            guard,
-        );
+        // Copy the data without modifying the original entry.
+        let entry = if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
+            Self::read_data_block(&link.data_block, from_entry_ptr.current_index)
+        } else {
+            Self::read_data_block(
+                unsafe { from_data_block.as_ref() },
+                from_entry_ptr.current_index,
+            )
+        };
+        self.insert(data_block, hash, entry, guard);
 
         // Remove the entry from the old bucket.
         from_writer
@@ -435,7 +385,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// Drops entries in the [`DataBlock`] based on the metadata of the [`Bucket`].
     ///
     /// The [`Bucket`] and the [`DataBlock`] should never be used afterward.
-    pub(super) fn drop_entries(&self, data_block: &DataBlock<K, V, BUCKET_LEN>) {
+    pub(super) fn drop_entries(&self, data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>) {
         if !self.metadata.link.is_null(Relaxed) {
             let mut next = self.metadata.link.swap((None, Tag::None), Acquire);
             while let Some(current) = next.0 {
@@ -453,7 +403,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             if occupied_bitmap != 0 {
                 let mut index = occupied_bitmap.trailing_zeros();
                 while index != 32 {
-                    Self::drop_entry(data_block, index as usize);
+                    Self::drop_entry(unsafe { data_block.as_ref() }, index as usize);
                     occupied_bitmap -= 1_u32 << index;
                     index = occupied_bitmap.trailing_zeros();
                 }
@@ -465,7 +415,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// the memory.
     pub(super) fn drop_removed_unreachable_entries(
         &self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         guard: &Guard,
     ) {
         debug_assert_eq!(TYPE, INDEX);
@@ -485,7 +435,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 debug_assert_eq!(occupied_bitmap & bit, bit);
                 occupied_bitmap -= bit;
                 removed_bitmap -= bit;
-                Self::drop_entry(data_block, index as usize);
+                Self::drop_entry(unsafe { data_block.as_ref() }, index as usize);
                 index = removed_bitmap.trailing_zeros();
             }
 
@@ -502,21 +452,73 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
     }
 
+    /// Inserts an entry into the linked list.
+    fn insert_overflow<'g>(
+        &self,
+        len: u32,
+        hash: u64,
+        entry: (K, V),
+        guard: &'g Guard,
+    ) -> EntryPtr<'g, K, V, TYPE> {
+        let mut link_ptr = self.metadata.link.load(Acquire, guard);
+        while let Some(link) = link_ptr.as_ref() {
+            let occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
+            let free_index = occupied_bitmap.trailing_ones() as usize;
+            if free_index != LINKED_BUCKET_LEN {
+                self.insert_entry(
+                    &link.metadata,
+                    &link.data_block,
+                    free_index,
+                    occupied_bitmap,
+                    hash,
+                    entry,
+                );
+                self.len.store(len + 1, Relaxed);
+                return EntryPtr {
+                    current_link_ptr: link_ptr,
+                    current_index: free_index,
+                };
+            }
+            link_ptr = link.metadata.link.load(Acquire, guard);
+        }
+
+        // Insert a new `LinkedBucket` at the linked list head.
+        let head = self.metadata.link.get_shared(Relaxed, guard);
+        let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
+        let link_ptr = link.get_guarded_ptr(guard);
+        if let Some(link) = link_ptr.as_ref() {
+            self.write_data_block(&link.data_block, entry, 0);
+            self.write_cell(&link.metadata.partial_hash_array[0], |h| {
+                *h = Self::partial_hash(hash);
+            });
+            link.metadata.occupied_bitmap.store(1, Relaxed);
+        }
+        if let Some(head) = link.metadata.link.load(Relaxed, guard).as_ref() {
+            head.prev_link.store(link.as_ptr().cast_mut(), Relaxed);
+        }
+        self.metadata.link.swap((Some(link), Tag::None), Release);
+        self.len.store(len + 1, Relaxed);
+        EntryPtr {
+            current_link_ptr: link_ptr,
+            current_index: 0,
+        }
+    }
+
     /// Inserts a key-value pair in the slot.
     #[inline]
-    fn insert_entry_with<C: FnOnce() -> (K, V), const LEN: usize>(
+    fn insert_entry<const LEN: usize>(
         &self,
         metadata: &Metadata<K, V, LEN>,
         data_block: &DataBlock<K, V, LEN>,
         index: usize,
         occupied_bitmap: u32,
         hash: u64,
-        constructor: C,
+        entry: (K, V),
     ) {
         debug_assert!(index < LEN);
         debug_assert_eq!(metadata.occupied_bitmap.load(Relaxed) & (1_u32 << index), 0);
 
-        self.write_data_block(data_block, constructor(), index);
+        self.write_data_block(data_block, entry, index);
         self.write_cell(&metadata.partial_hash_array[index], |h| {
             *h = Self::partial_hash(hash);
         });
@@ -634,7 +636,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     #[inline]
     pub(super) fn search_entry<'g, Q>(
         &self,
-        data_block: &'g DataBlock<K, V, BUCKET_LEN>,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         key: &Q,
         hash: u64,
         guard: &'g Guard,
@@ -646,7 +648,9 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             return None;
         }
 
-        if let Some((entry, _)) = Self::search_data_block(&self.metadata, data_block, key, hash) {
+        if let Some((entry, _)) =
+            Self::search_data_block(&self.metadata, unsafe { data_block.as_ref() }, key, hash)
+        {
             return Some(entry);
         }
 
@@ -669,7 +673,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     #[inline]
     pub(crate) fn get_entry_ptr<'g, Q>(
         &self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         key: &Q,
         hash: u64,
         guard: &'g Guard,
@@ -681,7 +685,9 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             return EntryPtr::new(guard);
         }
 
-        if let Some((_, index)) = Self::search_data_block(&self.metadata, data_block, key, hash) {
+        if let Some((_, index)) =
+            Self::search_data_block(&self.metadata, unsafe { data_block.as_ref() }, key, hash)
+        {
             return EntryPtr {
                 current_link_ptr: Ptr::null(),
                 current_index: index,
@@ -763,13 +769,13 @@ impl<K, V, const LEN: usize> Index<usize> for DataBlock<K, V, LEN> {
 unsafe impl<K: Send, V: Send, const LEN: usize> Send for DataBlock<K, V, LEN> {}
 unsafe impl<K: Send + Sync, V: Send + Sync, const LEN: usize> Sync for DataBlock<K, V, LEN> {}
 
-impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
+impl<K, V, L: LruList, const TYPE: char> Writer<K, V, L, TYPE> {
     /// Locks the [`Bucket`] asynchronously.
     #[inline]
-    pub(crate) async fn lock_async(
+    pub(crate) async fn lock_async<'g>(
         bucket: &'g Bucket<K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
-    ) -> Option<Writer<'g, K, V, L, TYPE>> {
+    ) -> Option<Writer<K, V, L, TYPE>> {
         if bucket
             .rw_lock
             .lock_async_with(|| sendable_guard.reset())
@@ -777,7 +783,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
         {
             // The `bucket` was not killed, and will not be killed until the `Writer` is dropped.
             // This guarantees that the `BucketArray` will survive as long as the `Writer` is alive.
-            Some(Writer { bucket })
+            Some(Self::from_bucket(bucket))
         } else {
             None
         }
@@ -785,11 +791,9 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
 
     /// Locks the [`Bucket`] synchronously.
     #[inline]
-    pub(crate) fn lock_sync(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-    ) -> Option<Writer<'g, K, V, L, TYPE>> {
+    pub(crate) fn lock_sync(bucket: &Bucket<K, V, L, TYPE>) -> Option<Writer<K, V, L, TYPE>> {
         if bucket.rw_lock.lock_sync() {
-            Some(Writer { bucket })
+            Some(Self::from_bucket(bucket))
         } else {
             None
         }
@@ -798,10 +802,10 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     /// Tries to lock the [`Bucket`].
     #[inline]
     pub(crate) fn try_lock(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-    ) -> Result<Option<Writer<'g, K, V, L, TYPE>>, ()> {
+        bucket: &Bucket<K, V, L, TYPE>,
+    ) -> Result<Option<Writer<K, V, L, TYPE>>, ()> {
         if bucket.rw_lock.try_lock() {
-            Ok(Some(Writer { bucket }))
+            Ok(Some(Self::from_bucket(bucket)))
         } else if bucket.rw_lock.is_poisoned(Relaxed) {
             Ok(None)
         } else {
@@ -811,10 +815,10 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
 
     /// Creates a new [`Writer`] from a [`Bucket`].
     #[inline]
-    pub(crate) const fn from_bucket(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-    ) -> Writer<'g, K, V, L, TYPE> {
-        Writer { bucket }
+    pub(crate) const fn from_bucket(bucket: &Bucket<K, V, L, TYPE>) -> Writer<K, V, L, TYPE> {
+        Writer {
+            bucket: unsafe { NonNull::new_unchecked(from_ref(bucket).cast_mut()) },
+        }
     }
 
     /// Marks the [`Bucket`] killed by poisoning the lock.
@@ -847,29 +851,35 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     }
 }
 
-impl<K, V, L: LruList, const TYPE: char> Deref for Writer<'_, K, V, L, TYPE> {
+impl<K, V, L: LruList, const TYPE: char> Deref for Writer<K, V, L, TYPE> {
     type Target = Bucket<K, V, L, TYPE>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.bucket
+        unsafe { self.bucket.as_ref() }
     }
 }
 
-impl<K, V, L: LruList, const TYPE: char> Drop for Writer<'_, K, V, L, TYPE> {
+impl<K, V, L: LruList, const TYPE: char> Drop for Writer<K, V, L, TYPE> {
     #[inline]
     fn drop(&mut self) {
-        self.bucket.rw_lock.release_lock();
+        self.rw_lock.release_lock();
     }
 }
 
-impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
+unsafe impl<K: Send, V: Send, L: LruList, const TYPE: char> Send for Writer<K, V, L, TYPE> {}
+unsafe impl<K: Send + Sync, V: Send + Sync, L: LruList, const TYPE: char> Sync
+    for Writer<K, V, L, TYPE>
+{
+}
+
+impl<'g, K, V, L: LruList, const TYPE: char> Reader<K, V, L, TYPE> {
     /// Locks the [`Bucket`] asynchronously.
     #[inline]
     pub(crate) async fn lock_async(
         bucket: &'g Bucket<K, V, L, TYPE>,
-        sendable_guard: &'g SendableGuard,
-    ) -> Option<Reader<'g, K, V, L, TYPE>> {
+        sendable_guard: &SendableGuard,
+    ) -> Option<Reader<K, V, L, TYPE>> {
         if bucket
             .rw_lock
             .share_async_with(|| sendable_guard.reset())
@@ -877,7 +887,9 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
         {
             // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
             // This guarantees that the `BucketArray` will survive as long as the `Reader` is alive.
-            Some(Reader { bucket })
+            Some(Reader {
+                bucket: unsafe { NonNull::new_unchecked(from_ref(bucket).cast_mut()) },
+            })
         } else {
             None
         }
@@ -887,31 +899,37 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
     ///
     /// Returns `None` if the [`Bucket`] has been killed or is empty.
     #[inline]
-    pub(crate) fn lock_sync(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-    ) -> Option<Reader<'g, K, V, L, TYPE>> {
+    pub(crate) fn lock_sync(bucket: &Bucket<K, V, L, TYPE>) -> Option<Reader<K, V, L, TYPE>> {
         if bucket.rw_lock.share_sync() {
-            Some(Reader { bucket })
+            Some(Reader {
+                bucket: unsafe { NonNull::new_unchecked(from_ref(bucket).cast_mut()) },
+            })
         } else {
             None
         }
     }
 }
 
-impl<'g, K, V, L: LruList, const TYPE: char> Deref for Reader<'g, K, V, L, TYPE> {
-    type Target = &'g Bucket<K, V, L, TYPE>;
+impl<K, V, L: LruList, const TYPE: char> Deref for Reader<K, V, L, TYPE> {
+    type Target = Bucket<K, V, L, TYPE>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &self.bucket
+        unsafe { self.bucket.as_ref() }
     }
 }
 
-impl<K, V, L: LruList, const TYPE: char> Drop for Reader<'_, K, V, L, TYPE> {
+impl<K, V, L: LruList, const TYPE: char> Drop for Reader<K, V, L, TYPE> {
     #[inline]
     fn drop(&mut self) {
-        self.bucket.rw_lock.release_share();
+        self.rw_lock.release_share();
     }
+}
+
+unsafe impl<K: Send, V: Send, L: LruList, const TYPE: char> Send for Reader<K, V, L, TYPE> {}
+unsafe impl<K: Send + Sync, V: Send + Sync, L: LruList, const TYPE: char> Sync
+    for Reader<K, V, L, TYPE>
+{
 }
 
 impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
@@ -962,13 +980,13 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     ///
     /// The [`EntryPtr`] must point to a valid entry.
     #[inline]
-    pub(crate) fn get(&self, data_block: &'g DataBlock<K, V, BUCKET_LEN>) -> &'g (K, V) {
+    pub(crate) fn get(&self, data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>) -> &'g (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
 
         let entry_ptr = if let Some(link) = self.current_link_ptr.as_ref() {
             Bucket::<K, V, (), TYPE>::entry_ptr(&link.data_block, self.current_index)
         } else {
-            Bucket::<K, V, (), TYPE>::entry_ptr(data_block, self.current_index)
+            Bucket::<K, V, (), TYPE>::entry_ptr(unsafe { data_block.as_ref() }, self.current_index)
         };
         unsafe { &(*entry_ptr) }
     }
@@ -979,7 +997,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     #[inline]
     pub(crate) fn get_mut<L: LruList>(
         &mut self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         _writer: &Writer<K, V, L, TYPE>,
     ) -> &mut (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
@@ -987,7 +1005,10 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         let entry_ptr = if let Some(link) = self.current_link_ptr.as_ref() {
             Bucket::<K, V, L, TYPE>::entry_mut_ptr(&link.data_block, self.current_index)
         } else {
-            Bucket::<K, V, L, TYPE>::entry_mut_ptr(data_block, self.current_index)
+            Bucket::<K, V, L, TYPE>::entry_mut_ptr(
+                unsafe { data_block.as_ref() },
+                self.current_index,
+            )
         };
         unsafe { &mut (*entry_ptr) }
     }
@@ -1361,13 +1382,15 @@ mod test {
         fn evict_untracked(xs in 0..BUCKET_LEN * 2) {
             let data_block: DataBlock<usize, usize, BUCKET_LEN> =
                 unsafe { MaybeUninit::uninit().assume_init() };
+            let data_block_ptr =
+                unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             for v in 0..xs {
                 let guard = Guard::new();
                 let writer = Writer::lock_sync(&bucket).unwrap();
-                let evicted = writer.evict_lru_head(&data_block);
+                let evicted = writer.evict_lru_head(data_block_ptr);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
-                writer.insert_with(&data_block, 0, || (v, v), &guard);
+                writer.insert(data_block_ptr, 0, (v, v), &guard);
                 assert_eq!(writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
             }
         }
@@ -1377,12 +1400,14 @@ mod test {
         fn evict_overflowed(xs in 1..BUCKET_LEN * 2) {
             let data_block: DataBlock<usize, usize, BUCKET_LEN> =
                 unsafe { MaybeUninit::uninit().assume_init() };
+            let data_block_ptr =
+                unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             let guard = Guard::new();
             let writer = Writer::lock_sync(&bucket).unwrap();
             for _ in 0..3 {
                 for v in 0..xs {
-                    let entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
+                    let entry_ptr = writer.insert(data_block_ptr, 0, (v, v), &guard);
                     writer.update_lru_tail(&entry_ptr);
                     if v < BUCKET_LEN {
                         assert_eq!(
@@ -1400,16 +1425,16 @@ mod test {
 
                 let mut evicted_key = None;
                 if xs >= BUCKET_LEN {
-                    let evicted = writer.evict_lru_head(&data_block);
+                    let evicted = writer.evict_lru_head(data_block_ptr);
                     assert!(evicted.is_some());
                     evicted_key = evicted.map(|(k, _)| k);
                 }
                 assert_ne!(writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
 
                 for v in 0..xs {
-                    let mut entry_ptr = writer.get_entry_ptr(&data_block, &v, 0, &guard);
+                    let mut entry_ptr = writer.get_entry_ptr(data_block_ptr, &v, 0, &guard);
                     if entry_ptr.is_valid() {
-                        let _erased = writer.remove(&data_block, &mut entry_ptr, &guard);
+                        let _erased = writer.remove(data_block_ptr, &mut entry_ptr, &guard);
                     } else {
                         assert_eq!(v, evicted_key.unwrap());
                     }
@@ -1423,13 +1448,15 @@ mod test {
         fn evict_tracked(xs in 0..BUCKET_LEN * 2) {
             let data_block: DataBlock<usize, usize, BUCKET_LEN> =
                 unsafe { MaybeUninit::uninit().assume_init() };
+            let data_block_ptr =
+                unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             for v in 0..xs {
                 let guard = Guard::new();
                 let writer = Writer::lock_sync(&bucket).unwrap();
-                let evicted = writer.evict_lru_head(&data_block);
+                let evicted = writer.evict_lru_head(data_block_ptr);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
-                let mut entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
+                let mut entry_ptr = writer.insert(data_block_ptr, 0, (v, v), &guard);
                 writer.update_lru_tail(&entry_ptr);
                 assert_eq!(
                     writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize,
@@ -1465,11 +1492,13 @@ mod test {
         fn removed(xs in 0..BUCKET_LEN) {
             let data_block: DataBlock<usize, usize, BUCKET_LEN> =
                 unsafe { MaybeUninit::uninit().assume_init() };
+            let data_block_ptr =
+                unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             for v in 0..xs {
                 let guard = Guard::new();
                 let writer = Writer::lock_sync(&bucket).unwrap();
-                let entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
+                let entry_ptr = writer.insert(data_block_ptr, 0, (v, v), &guard);
                 writer.update_lru_tail(&entry_ptr);
                 let mut iterated = 1;
                 let mut i = writer.lru_list.read(entry_ptr.current_index).1 as usize;
@@ -1482,7 +1511,9 @@ mod test {
             for v in 0..xs {
                 let guard = Guard::new();
                 let writer = Writer::lock_sync(&bucket).unwrap();
-                let entry_ptr = writer.get_entry_ptr(&data_block, &v, 0, &guard);
+                let data_block_ptr =
+                    unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
+                let entry_ptr = writer.get_entry_ptr(data_block_ptr, &v, 0, &guard);
                 let mut iterated = 1;
                 let mut i = writer.lru_list.read(entry_ptr.current_index).1 as usize;
                 while i != entry_ptr.current_index {
@@ -1525,17 +1556,14 @@ mod test {
                         };
                     }
                     assert_eq!(sum % 256, 0);
+                    let data_block_ptr =
+                        unsafe { NonNull::new_unchecked(data_block_clone.as_ptr().cast_mut()) };
                     if i == 0 {
-                        writer.insert_with(
-                            &data_block_clone,
-                            partial_hash,
-                            || (task_id, 0),
-                            &guard,
-                        );
+                        writer.insert(data_block_ptr, partial_hash, (task_id, 0), &guard);
                     } else {
                         assert_eq!(
                             writer
-                                .search_entry(&data_block_clone, &task_id, partial_hash, &guard)
+                                .search_entry(data_block_ptr, &task_id, partial_hash, &guard)
                                 .unwrap(),
                             &(task_id, 0_usize)
                         );
@@ -1545,7 +1573,7 @@ mod test {
                     let reader = Reader::lock_sync(&*bucket_clone).unwrap();
                     assert_eq!(
                         reader
-                            .search_entry(&data_block_clone, &task_id, partial_hash, &guard)
+                            .search_entry(data_block_ptr, &task_id, partial_hash, &guard)
                             .unwrap(),
                         &(task_id, 0_usize)
                     );
@@ -1561,10 +1589,11 @@ mod test {
         assert_eq!(bucket.len(), num_tasks);
 
         let epoch_guard = Guard::new();
+        let data_block_ptr = unsafe { NonNull::new_unchecked(data_block.as_ptr().cast_mut()) };
         for task_id in 0..num_tasks {
             assert_eq!(
                 bucket.search_entry(
-                    &data_block,
+                    data_block_ptr,
                     &task_id,
                     (task_id % BUCKET_LEN).try_into().unwrap(),
                     &epoch_guard
@@ -1583,7 +1612,11 @@ mod test {
         entry_ptr = EntryPtr::new(&epoch_guard);
         let writer = Writer::lock_sync(&bucket).unwrap();
         while entry_ptr.move_to_next(&writer, &epoch_guard) {
-            writer.remove(&data_block, &mut entry_ptr, &epoch_guard);
+            writer.remove(
+                unsafe { NonNull::new_unchecked(data_block.as_ptr().cast_mut()) },
+                &mut entry_ptr,
+                &epoch_guard,
+            );
         }
         assert_eq!(writer.len(), 0);
         writer.kill();

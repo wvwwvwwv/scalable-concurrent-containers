@@ -3,6 +3,11 @@
 
 ## Version 3
 
+3.2.0
+
+* API update: `hash_index::OccupiedEntry::update` does not consume itself.
+* Minor memory usage optimization.
+
 3.1.2
 
 * Minor memory usage optimization.

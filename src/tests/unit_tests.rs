@@ -120,7 +120,7 @@ mod hashmap {
 
     #[test]
     fn future_size() {
-        let limit = 728;
+        let limit = 688;
         let hashmap: HashMap<usize, usize> = HashMap::default();
         let insert_size = size_of_val(&hashmap.insert_async(0, 0));
         assert!(insert_size < limit, "{insert_size}");
@@ -1649,7 +1649,7 @@ mod hashindex {
                     }
                     for id in range.clone() {
                         hashindex.peek_with(&id, |k, v| assert_eq!(k, v));
-                        let entry = hashindex.get_async(&id).await.unwrap();
+                        let mut entry = hashindex.get_async(&id).await.unwrap();
                         assert_eq!(*entry.get(), id);
                         entry.update(usize::MAX);
                     }
@@ -1696,7 +1696,7 @@ mod hashindex {
                             // See notes about `Miri` in `peek*`.
                             hashindex.peek_with(&id, |k, v| assert_eq!(k, v));
                         }
-                        let entry = hashindex.get_sync(&id).unwrap();
+                        let mut entry = hashindex.get_sync(&id).unwrap();
                         assert_eq!(*entry.get(), id);
                         entry.update(usize::MAX);
                     }
