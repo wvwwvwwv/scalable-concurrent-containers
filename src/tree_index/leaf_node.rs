@@ -4,6 +4,7 @@ use std::ptr;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
+use saa::Lock;
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::Leaf;
@@ -11,15 +12,11 @@ use super::leaf::{DIMENSION, InsertResult, RemoveResult, Scanner, range_contains
 use super::node::Node;
 use crate::Comparable;
 use crate::LinkedList;
-use crate::async_helper::{DeriveAsyncWait, WaitQueue};
+use crate::async_helper::TryWait;
 use crate::exit_guard::ExitGuard;
-use crate::maybe_std::AtomicU8;
 
 /// [`Tag::First`] indicates that the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;
-
-/// [`Tag::Second`] indicates that the corresponding node is locked.
-pub const LOCKED: Tag = Tag::Second;
 
 /// [`LeafNode`] contains a list of instances of `K, V` [`Leaf`].
 ///
@@ -35,10 +32,8 @@ pub struct LeafNode<K, V> {
     unbounded_child: AtomicShared<Leaf<K, V>>,
     /// Ongoing split operation.
     split_op: StructuralChange<K, V>,
-    /// The latch protecting the [`LeafNode`].
-    latch: AtomicU8,
-    /// `wait_queue` for `latch`.
-    wait_queue: WaitQueue,
+    /// [`Lock`] to protecct the [`LeafNode`].
+    pub(super) lock: Lock,
 }
 
 /// [`Locker`] holds exclusive ownership of a [`LeafNode`].
@@ -82,8 +77,7 @@ impl<K, V> LeafNode<K, V> {
             children: Leaf::new(),
             unbounded_child: AtomicShared::null(),
             split_op: StructuralChange::default(),
-            latch: AtomicU8::new(Tag::None.into()),
-            wait_queue: WaitQueue::default(),
+            lock: Lock::default(),
         }
     }
 
@@ -107,50 +101,6 @@ impl<K, V> LeafNode<K, V> {
     #[inline]
     pub(super) fn retired(&self) -> bool {
         self.unbounded_child.tag(Acquire) == RETIRED
-    }
-
-    /// Waits for the lock on the [`LeafNode`] to be released.
-    #[inline]
-    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
-        let waiter = || {
-            if self.latch.load(Acquire) == u8::from(LOCKED) {
-                // The `LeafNode` is being split or locked.
-                return Err(());
-            }
-            Ok(())
-        };
-
-        if let Some(async_wait) = async_wait.derive() {
-            let _result = self.wait_queue.push_async_entry(async_wait, waiter);
-        } else {
-            let _result = self.wait_queue.wait_sync(waiter);
-        }
-    }
-
-    /// Tries to lock the [`LeafNode`].
-    fn try_lock(&self) -> bool {
-        self.latch
-            .compare_exchange(Tag::None.into(), u8::from(LOCKED), Acquire, Relaxed)
-            .is_ok()
-    }
-
-    /// Unlocks the [`LeafNode`].
-    fn unlock(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), u8::from(LOCKED));
-        if let Err(prev) =
-            self.latch
-                .compare_exchange(LOCKED.into(), Tag::None.into(), Release, Relaxed)
-        {
-            debug_assert_eq!(prev, u8::from(RETIRED));
-        }
-        self.wait_queue.signal();
-    }
-
-    /// Retires itself.
-    fn retire(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), u8::from(LOCKED));
-        self.latch.swap(u8::from(RETIRED), Release);
-        self.wait_queue.signal();
     }
 }
 
@@ -312,11 +262,11 @@ where
     ///
     /// Returns an error if a retry is required.
     #[inline]
-    pub(super) fn insert<D: DeriveAsyncWait>(
+    pub(super) fn insert<W: TryWait>(
         &self,
         mut key: K,
         mut val: V,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         loop {
@@ -349,7 +299,7 @@ where
                             }
                             InsertResult::Frozen(k, v) => {
                                 // The `Leaf` is being split: retry.
-                                self.wait(async_wait);
+                                async_wait.try_wait(&self.lock);
                                 return Err((k, v));
                             }
                         };
@@ -405,7 +355,7 @@ where
                         return Ok(split_result);
                     }
                     InsertResult::Frozen(k, v) => {
-                        self.wait(async_wait);
+                        async_wait.try_wait(&self.lock);
                         return Err((k, v));
                     }
                 };
@@ -420,11 +370,11 @@ where
     ///
     /// Returns an error if a retry is required.
     #[inline]
-    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, D: DeriveAsyncWait>(
+    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, W: TryWait>(
         &self,
         key: &Q,
         condition: &mut F,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &Guard,
     ) -> Result<RemoveResult, ()>
     where
@@ -441,7 +391,7 @@ where
                         if result == RemoveResult::Frozen {
                             // When a `Leaf` is frozen, its entries may be being copied to new
                             // `Leaves`.
-                            self.wait(async_wait);
+                            async_wait.try_wait(&self.lock);
                             return Err(());
                         } else if result == RemoveResult::Retired {
                             return Ok(self.coalesce(guard));
@@ -461,7 +411,7 @@ where
                 }
                 let result = unbounded.remove_if(key, condition);
                 if result == RemoveResult::Frozen {
-                    self.wait(async_wait);
+                    async_wait.try_wait(&self.lock);
                     return Err(());
                 } else if result == RemoveResult::Retired {
                     return Ok(self.coalesce(guard));
@@ -476,13 +426,13 @@ where
     ///
     /// Returns the number of remaining children.
     #[inline]
-    pub(super) fn remove_range<'g, Q, R: RangeBounds<Q>, D: DeriveAsyncWait>(
+    pub(super) fn remove_range<'g, Q, R: RangeBounds<Q>, W: TryWait>(
         &self,
         range: &R,
         start_unbounded: bool,
         valid_lower_max_leaf: Option<&'g Leaf<K, V>>,
         valid_upper_min_node: Option<&'g Node<K, V>>,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &'g Guard,
     ) -> Result<usize, ()>
     where
@@ -492,7 +442,7 @@ where
         debug_assert!(valid_lower_max_leaf.is_none() || valid_upper_min_node.is_none());
 
         let Some(_lock) = Locker::try_lock(self) else {
-            self.wait(async_wait);
+            async_wait.try_wait(&self.lock);
             return Err(());
         };
 
@@ -574,8 +524,8 @@ where
     ) -> &'g K {
         let mut middle_key = None;
 
-        low_key_leaf_node.latch.store(LOCKED.into(), Relaxed);
-        high_key_leaf_node.latch.store(LOCKED.into(), Relaxed);
+        low_key_leaf_node.lock.lock_sync();
+        high_key_leaf_node.lock.lock_sync();
 
         // It is safe to keep the pointers to the new leaf nodes in this full leaf node since the
         // whole split operation is protected under a single `ebr::Guard`, and the pointers are
@@ -719,7 +669,7 @@ where
             unsafe { self.split_op.low_key_leaf_node.load(Relaxed).as_ref() }
         {
             let origin = low_key_leaf_node.split_op.reset();
-            low_key_leaf_node.unlock();
+            low_key_leaf_node.lock.release_lock();
             origin.map(Shared::release);
         }
 
@@ -727,12 +677,14 @@ where
             unsafe { self.split_op.high_key_leaf_node.load(Relaxed).as_ref() }
         {
             let origin = high_key_leaf_node.split_op.reset();
-            high_key_leaf_node.unlock();
+            high_key_leaf_node.lock.release_lock();
             origin.map(Shared::release);
         }
 
         let origin = self.split_op.reset();
-        self.retire();
+
+        // The leaf node can no longer be locked.
+        self.lock.poison_lock();
         origin.map(Shared::release);
     }
 
@@ -772,7 +724,7 @@ where
         }
 
         let origin = self.split_op.reset();
-        self.unlock();
+        self.lock.release_lock();
         origin.map(Shared::release);
     }
 
@@ -817,23 +769,23 @@ where
     ///
     /// Returns an error if a retry is required.
     #[allow(clippy::too_many_lines)]
-    fn split_leaf<D: DeriveAsyncWait>(
+    fn split_leaf<W: TryWait>(
         &self,
         entry: (K, V),
         full_leaf_key: Option<&K>,
         full_leaf_ptr: Ptr<Leaf<K, V>>,
         full_leaf: &AtomicShared<Leaf<K, V>>,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
-        if !self.try_lock() {
-            self.wait(async_wait);
+        if !self.lock.try_lock() {
+            async_wait.try_wait(&self.lock);
             return Err(entry);
         } else if self.retired() {
-            self.unlock();
+            self.lock.release_lock();
             return Ok(InsertResult::Retired(entry.0, entry.1));
         } else if full_leaf_ptr != full_leaf.load(Relaxed, guard) {
-            self.unlock();
+            self.lock.release_lock();
             return Err(entry);
         }
 
@@ -857,7 +809,7 @@ where
             if rollback {
                 target.thaw();
                 self.split_op.reset();
-                self.unlock();
+                self.lock.release_lock();
             }
         });
 
@@ -956,7 +908,7 @@ where
         *exit_guard = false;
 
         let origin = self.split_op.reset();
-        self.unlock();
+        self.lock.release_lock();
         origin.map(Shared::release);
         unused_leaf.map(Shared::release);
 
@@ -1068,7 +1020,7 @@ impl<'n, K, V> Locker<'n, K, V> {
     /// Acquires exclusive lock on the [`LeafNode`].
     #[inline]
     pub(super) fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
-        if leaf_node.try_lock() {
+        if leaf_node.lock.try_lock() {
             Some(Locker { leaf_node })
         } else {
             None
@@ -1079,7 +1031,7 @@ impl<'n, K, V> Locker<'n, K, V> {
 impl<K, V> Drop for Locker<'_, K, V> {
     #[inline]
     fn drop(&mut self) {
-        self.leaf_node.unlock();
+        self.leaf_node.lock.release_lock();
     }
 }
 

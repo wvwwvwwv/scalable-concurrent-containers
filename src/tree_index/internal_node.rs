@@ -5,16 +5,16 @@ use std::ptr;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
+use saa::Lock;
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::leaf::{DIMENSION, InsertResult, Leaf, RemoveResult, Scanner};
+use super::leaf_node::RETIRED;
 use super::leaf_node::RemoveRangeState;
-use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
 use crate::Comparable;
-use crate::async_helper::{DeriveAsyncWait, WaitQueue};
+use crate::async_helper::TryWait;
 use crate::exit_guard::ExitGuard;
-use crate::maybe_std::AtomicU8;
 
 /// Internal node.
 ///
@@ -29,10 +29,8 @@ pub struct InternalNode<K, V> {
     pub(super) unbounded_child: AtomicShared<Node<K, V>>,
     /// Ongoing split operation.
     split_op: StructuralChange<K, V>,
-    /// The latch protecting the [`InternalNode`].
-    latch: AtomicU8,
-    /// `wait_queue` for `latch`.
-    wait_queue: WaitQueue,
+    /// [`Lock`] to protect the [`InternalNode`].
+    pub(super) lock: Lock,
 }
 
 /// [`Locker`] holds exclusive ownership of an [`InternalNode`].
@@ -60,8 +58,7 @@ impl<K, V> InternalNode<K, V> {
             children: Leaf::new(),
             unbounded_child: AtomicShared::null(),
             split_op: StructuralChange::default(),
-            latch: AtomicU8::new(Tag::None.into()),
-            wait_queue: WaitQueue::default(),
+            lock: Lock::default(),
         }
     }
 
@@ -95,50 +92,6 @@ impl<K, V> InternalNode<K, V> {
     #[inline]
     pub(super) fn retired(&self) -> bool {
         self.unbounded_child.tag(Acquire) == RETIRED
-    }
-
-    /// Waits for the lock on the [`InternalNode`] to be released.
-    #[inline]
-    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
-        let waiter = || {
-            if self.latch.load(Acquire) == LOCKED.into() {
-                // The `InternalNode` is being split or locked.
-                return Err(());
-            }
-            Ok(())
-        };
-
-        if let Some(async_wait) = async_wait.derive() {
-            let _result = self.wait_queue.push_async_entry(async_wait, waiter);
-        } else {
-            let _result = self.wait_queue.wait_sync(waiter);
-        }
-    }
-
-    /// Tries to lock the [`InternalNode`].
-    fn try_lock(&self) -> bool {
-        self.latch
-            .compare_exchange(Tag::None.into(), LOCKED.into(), Acquire, Relaxed)
-            .is_ok()
-    }
-
-    /// Unlocks the [`InternalNode`].
-    fn unlock(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
-        if let Err(prev) =
-            self.latch
-                .compare_exchange(LOCKED.into(), Tag::None.into(), Release, Relaxed)
-        {
-            debug_assert_eq!(prev, RETIRED.into());
-        }
-        self.wait_queue.signal();
-    }
-
-    /// Retires itself.
-    fn retire(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
-        self.latch.swap(RETIRED.into(), Release);
-        self.wait_queue.signal();
     }
 }
 
@@ -290,11 +243,11 @@ where
 
     /// Inserts a key-value pair.
     #[inline]
-    pub(super) fn insert<D: DeriveAsyncWait>(
+    pub(super) fn insert<W: TryWait>(
         &self,
         mut key: K,
         mut val: V,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         loop {
@@ -407,16 +360,16 @@ where
     ///
     /// Returns an error if a retry is required.
     #[inline]
-    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, D>(
+    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, W>(
         &self,
         key: &Q,
         condition: &mut F,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &Guard,
     ) -> Result<RemoveResult, ()>
     where
         Q: Comparable<K> + ?Sized,
-        D: DeriveAsyncWait,
+        W: TryWait,
     {
         loop {
             let (child, metadata) = self.children.min_greater_equal(key);
@@ -470,13 +423,13 @@ where
     /// Returns the number of remaining children.
     #[allow(clippy::too_many_lines)]
     #[inline]
-    pub(super) fn remove_range<'g, Q, R: RangeBounds<Q>, D: DeriveAsyncWait>(
+    pub(super) fn remove_range<'g, Q, R: RangeBounds<Q>, W: TryWait>(
         &self,
         range: &R,
         start_unbounded: bool,
         valid_lower_max_leaf: Option<&'g Leaf<K, V>>,
         valid_upper_min_node: Option<&'g Node<K, V>>,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &'g Guard,
     ) -> Result<usize, ()>
     where
@@ -486,7 +439,7 @@ where
         debug_assert!(valid_lower_max_leaf.is_none() || valid_upper_min_node.is_none());
 
         let Some(_lock) = Locker::try_lock(self) else {
-            self.wait(async_wait);
+            async_wait.try_wait(&self.lock);
             return Err(());
         };
 
@@ -615,26 +568,26 @@ where
     ///
     /// Returns an error if a retry is required.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    pub(super) fn split_node<D: DeriveAsyncWait>(
+    pub(super) fn split_node<W: TryWait>(
         &self,
         entry: (K, V),
         full_node_key: Option<&K>,
         full_node_ptr: Ptr<Node<K, V>>,
         full_node: &AtomicShared<Node<K, V>>,
         root_split: bool,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         let target = full_node_ptr.as_ref().unwrap();
-        if !self.try_lock() {
+        if !self.lock.try_lock() {
             target.rollback(guard);
-            self.wait(async_wait);
+            async_wait.try_wait(&self.lock);
             return Err(entry);
         }
         debug_assert!(!self.retired());
 
         if full_node_ptr != full_node.load(Relaxed, guard) {
-            self.unlock();
+            self.lock.release_lock();
             target.rollback(guard);
             return Err(entry);
         }
@@ -930,7 +883,7 @@ where
     #[inline]
     pub(super) fn finish_split(&self) {
         let origin = self.split_op.reset();
-        self.unlock();
+        self.lock.release_lock();
         origin.map(Shared::release);
     }
 
@@ -939,8 +892,8 @@ where
     pub(super) fn commit(&self, guard: &Guard) {
         let origin = self.split_op.reset();
 
-        // Mark the internal node retired to prevent further locking attempts.
-        self.retire();
+        // Prevent further exclusive access to the internal node.
+        self.lock.poison_lock();
         if let Some(origin) = origin {
             origin.commit(guard);
             let _: bool = origin.release();
@@ -951,7 +904,7 @@ where
     #[inline]
     pub(super) fn rollback(&self, guard: &Guard) {
         let origin = self.split_op.reset();
-        self.unlock();
+        self.lock.release_lock();
         if let Some(origin) = origin {
             origin.rollback(guard);
             let _: bool = origin.release();
@@ -1092,7 +1045,7 @@ impl<'n, K, V> Locker<'n, K, V> {
     /// Acquires exclusive lock on the [`InternalNode`].
     #[inline]
     pub(super) fn try_lock(internal_node: &'n InternalNode<K, V>) -> Option<Locker<'n, K, V>> {
-        if internal_node.try_lock() {
+        if internal_node.lock.try_lock() {
             Some(Locker { internal_node })
         } else {
             None
@@ -1101,7 +1054,7 @@ impl<'n, K, V> Locker<'n, K, V> {
 
     /// Retires the node with the lock released.
     pub(super) fn unlock_retire(self) {
-        self.internal_node.retire();
+        self.internal_node.lock.poison_lock();
         forget(self);
     }
 }
@@ -1109,7 +1062,7 @@ impl<'n, K, V> Locker<'n, K, V> {
 impl<K, V> Drop for Locker<'_, K, V> {
     #[inline]
     fn drop(&mut self) {
-        self.internal_node.unlock();
+        self.internal_node.lock.release_lock();
     }
 }
 
@@ -1150,12 +1103,10 @@ mod test {
                 children: Leaf::new(),
                 unbounded_child: AtomicShared::new(Node::new_leaf_node()),
                 split_op: StructuralChange::default(),
-                latch: AtomicU8::new(Tag::None.into()),
-                wait_queue: WaitQueue::default(),
+                lock: Lock::default(),
             })),
             split_op: StructuralChange::default(),
-            latch: AtomicU8::new(Tag::None.into()),
-            wait_queue: WaitQueue::default(),
+            lock: Lock::default(),
         }
     }
 

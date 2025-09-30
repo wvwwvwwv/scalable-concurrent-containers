@@ -3,7 +3,8 @@ use std::pin::{Pin, pin};
 use std::ptr;
 use std::sync::atomic::Ordering;
 
-use saa::{Gate, Pager};
+use saa::lock::Mode;
+use saa::{Lock, Pager};
 use sdd::{AtomicShared, Guard};
 
 /// [`SendableGuard`] is used when an asynchronous task needs to be suspended without invalidating
@@ -16,26 +17,17 @@ pub(crate) struct SendableGuard {
     guard: UnsafeCell<Option<Guard>>,
 }
 
-/// [`WaitQueue`] implements an unfair wait queue.
-///
-/// The sole purpose of this data structure is to avoid busy-waiting. [`WaitQueue`] should always be
-/// protected by [`sdd`].
-#[derive(Debug, Default)]
-pub(crate) struct WaitQueue {
-    /// [`Gate`] to control access to resources.
-    gate: Gate,
-}
-
 #[derive(Debug)]
 pub(crate) struct AsyncWait {
-    /// The associated `Pager`.
-    pager: Pager<'static, Gate>,
+    /// Allow the user to await the lock anywhere in the code.
+    pager: Pager<'static, Lock>,
 }
 
-/// [`DeriveAsyncWait`] derives a mutable reference to [`AsyncWait`].
-pub(crate) trait DeriveAsyncWait {
-    /// Returns a mutable reference to [`AsyncWait`] if available.
-    fn derive(&mut self) -> Option<&mut AsyncWait>;
+/// [`TryWait`] allows [`AsyncWait`] to be used in synchronous methods.
+pub(crate) trait TryWait {
+    /// Registers the [`Pager`] in the [`Lock`], or synchronously waits for the [`Lock`] to be
+    /// available.
+    fn try_wait(&mut self, lock: &Lock);
 }
 
 impl SendableGuard {
@@ -80,61 +72,13 @@ impl SendableGuard {
     }
 }
 
-/// SAFETY: this is the sole purpose of `SendableGuard`; Send-safety should be ensured by the
-/// user, e.g., the `SendableGuard` should always be reset before the task is suspended.
+// SAFETY: this is the sole purpose of `SendableGuard`; Send-safety should be ensured by the
+// user, e.g., the `SendableGuard` should always be reset before the task is suspended.
 unsafe impl Send for SendableGuard {}
 unsafe impl Sync for SendableGuard {}
 
-impl WaitQueue {
-    /// Waits for the condition to be met or signaled.
-    #[inline]
-    pub(crate) fn wait_sync<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
-        let mut pinned_pager = pin!(Pager::default());
-        self.gate.register_pager(&mut pinned_pager, true);
-
-        let result = f();
-        if result.is_ok() {
-            self.signal();
-        }
-        let _: Result<_, _> = pinned_pager.poll_sync();
-        result
-    }
-
-    /// Pushes an [`AsyncWait`] into the [`WaitQueue`].
-    ///
-    /// Returns `Ok(T)` if the condition is met and signaled.
-    #[inline]
-    pub(crate) fn push_async_entry<'w, T, F: FnOnce() -> Result<T, ()>>(
-        &'w self,
-        async_wait: &'w mut AsyncWait,
-        f: F,
-    ) -> Result<T, ()> {
-        let mut pinned_pager = unsafe {
-            let pager_ref = std::mem::transmute::<&mut Pager<'static, Gate>, &mut Pager<'w, Gate>>(
-                &mut async_wait.pager,
-            );
-            Pin::new_unchecked(pager_ref)
-        };
-        self.gate.register_pager(&mut pinned_pager, false);
-        if let Ok(result) = f() {
-            self.signal();
-            if pinned_pager.try_poll().is_ok() {
-                async_wait.pager = Pager::default();
-                return Ok(result);
-            }
-        }
-        Err(())
-    }
-
-    /// Signals waiting threads to wake up.
-    #[inline]
-    pub(crate) fn signal(&self) {
-        let _: Result<_, _> = self.gate.permit();
-    }
-}
-
 impl AsyncWait {
-    /// Awaits the [`Gate`] to be open.
+    /// Awaits the [`Lock`] to be available.
     #[inline]
     pub async fn wait(self: &mut Pin<&mut Self>) {
         let this = unsafe { ptr::read(self) };
@@ -148,23 +92,31 @@ impl Default for AsyncWait {
     fn default() -> Self {
         Self {
             pager: unsafe {
-                std::mem::transmute::<Pager<'_, Gate>, Pager<'static, Gate>>(Pager::default())
+                std::mem::transmute::<Pager<'_, Lock>, Pager<'static, Lock>>(Pager::default())
             },
         }
     }
 }
 
-impl DeriveAsyncWait for Pin<&mut AsyncWait> {
+impl TryWait for Pin<&mut AsyncWait> {
     #[inline]
-    fn derive(&mut self) -> Option<&mut AsyncWait> {
+    fn try_wait(&mut self, lock: &Lock) {
         let this = unsafe { ptr::read(self) };
-        Some(unsafe { this.get_unchecked_mut() })
+        let mut pinned_pager = unsafe {
+            let pager_ref = std::mem::transmute::<&mut Pager<'static, Lock>, &mut Pager<Lock>>(
+                &mut this.get_unchecked_mut().pager,
+            );
+            Pin::new_unchecked(pager_ref)
+        };
+        lock.register_pager(&mut pinned_pager, Mode::Wait, false);
     }
 }
 
-impl DeriveAsyncWait for () {
+impl TryWait for () {
     #[inline]
-    fn derive(&mut self) -> Option<&mut AsyncWait> {
-        None
+    fn try_wait(&mut self, lock: &Lock) {
+        let mut pinned_pager = pin!(Pager::default());
+        lock.register_pager(&mut pinned_pager, Mode::Wait, true);
+        let _: Result<_, _> = pinned_pager.poll_sync();
     }
 }

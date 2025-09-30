@@ -41,12 +41,12 @@ mod hash_table;
 
 #[cfg(feature = "loom")]
 mod maybe_std {
-    pub(crate) use loom::sync::atomic::{AtomicU8, AtomicUsize};
+    pub(crate) use loom::sync::atomic::AtomicUsize;
 }
 
 #[cfg(not(feature = "loom"))]
 mod maybe_std {
-    pub(crate) use std::sync::atomic::{AtomicU8, AtomicUsize};
+    pub(crate) use std::sync::atomic::AtomicUsize;
 }
 
 #[cfg(feature = "serde")]

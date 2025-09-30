@@ -8,7 +8,7 @@ use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
 use crate::Comparable;
-use crate::async_helper::DeriveAsyncWait;
+use crate::async_helper::TryWait;
 use crate::exit_guard::ExitGuard;
 
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
@@ -120,11 +120,11 @@ where
 
     /// Inserts a key-value pair.
     #[inline]
-    pub(super) fn insert<D: DeriveAsyncWait>(
+    pub(super) fn insert<W: TryWait>(
         &self,
         key: K,
         val: V,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         match &self {
@@ -135,16 +135,16 @@ where
 
     /// Removes an entry associated with the given key.
     #[inline]
-    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, D>(
+    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, W>(
         &self,
         key: &Q,
         condition: &mut F,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &Guard,
     ) -> Result<RemoveResult, ()>
     where
         Q: Comparable<K> + ?Sized,
-        D: DeriveAsyncWait,
+        W: TryWait,
     {
         match &self {
             Self::Internal(internal_node) => {
@@ -160,13 +160,13 @@ where
     ///
     /// Returns the number of remaining children.
     #[inline]
-    pub(super) fn remove_range<'g, Q, R: RangeBounds<Q>, D: DeriveAsyncWait>(
+    pub(super) fn remove_range<'g, Q, R: RangeBounds<Q>, W: TryWait>(
         &self,
         range: &R,
         start_unbounded: bool,
         valid_lower_max_leaf: Option<&'g Leaf<K, V>>,
         valid_upper_min_node: Option<&'g Node<K, V>>,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &'g Guard,
     ) -> Result<usize, ()>
     where
@@ -268,9 +268,9 @@ where
     ///
     /// Returns `false` if a conflict is detected.
     #[inline]
-    pub(super) fn cleanup_root<D: DeriveAsyncWait>(
+    pub(super) fn cleanup_root<W: TryWait>(
         root: &AtomicShared<Node<K, V>>,
-        async_wait: &mut D,
+        async_wait: &mut W,
         guard: &Guard,
     ) -> bool {
         let mut root_ptr = root.load(Acquire, guard);
@@ -285,7 +285,7 @@ where
                     } else if let Some(locker) = internal_node::Locker::try_lock(internal_node) {
                         internal_node_locker.replace(locker);
                     } else {
-                        internal_node.wait(async_wait);
+                        async_wait.try_wait(&internal_node.lock);
                     }
                 }
                 Self::Leaf(leaf_node) => {
@@ -295,7 +295,7 @@ where
                     } else if let Some(locker) = leaf_node::Locker::try_lock(leaf_node) {
                         leaf_node_locker.replace(locker);
                     } else {
-                        leaf_node.wait(async_wait);
+                        async_wait.try_wait(&leaf_node.lock);
                     }
                 }
             }
