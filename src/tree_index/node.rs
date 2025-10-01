@@ -211,11 +211,20 @@ where
 
         // The fact that the `TreeIndex` calls this function means the root is full and locked.
         let mut new_root = Shared::new(Node::new_internal_node());
-        if let (Some(Self::Internal(internal_node)), Some(old_root)) = (
-            unsafe { new_root.get_mut() },
-            root.get_shared(Relaxed, guard),
-        ) {
+        if let (Some(Self::Internal(internal_node)), Some(old_root)) =
+            (unsafe { new_root.get_mut() }, root_ptr.get_shared())
+        {
+            if root.load(Relaxed, guard) != root_ptr {
+                // The root has changed.
+                return (key, val);
+            }
+
             internal_node.unbounded_child = AtomicShared::from(old_root);
+
+            // Now, the old root is connected to the new root, so the split operation will be rolled
+            // back in the `split_node` method if memory allocation fails.
+            *exit_guard = false;
+
             let result = internal_node.split_node(
                 (key, val),
                 None,
@@ -243,9 +252,6 @@ where
                     if let Some(Self::Internal(internal_node)) = new_root_ptr.as_ref() {
                         internal_node.finish_split();
                     }
-
-                    // The operation is successful.
-                    *exit_guard = false;
                     if let Some(old_root) = old_root {
                         old_root.commit(guard);
                     }
@@ -255,6 +261,8 @@ where
                     if let Some(Self::Internal(internal_node)) = new_root.as_deref() {
                         internal_node.finish_split();
                     }
+                    // The old root need to rollback the split operation.
+                    *exit_guard = true;
                 }
             }
         }

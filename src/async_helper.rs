@@ -19,7 +19,7 @@ pub(crate) struct SendableGuard {
 
 #[derive(Debug)]
 pub(crate) struct AsyncWait {
-    /// Allow the user to await the lock anywhere in the code.
+    /// Allows the user to await the lock anywhere in the code.
     pager: Pager<'static, Lock>,
 }
 

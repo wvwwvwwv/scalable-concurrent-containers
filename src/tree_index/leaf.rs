@@ -4,13 +4,16 @@ use std::fmt::{self, Debug};
 use std::mem::{MaybeUninit, needs_drop};
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
+#[cfg(not(feature = "loom"))]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 use sdd::{AtomicShared, Guard, Shared};
 
 use crate::Comparable;
 use crate::LinkedList;
-use crate::maybe_std::AtomicUsize;
+#[cfg(feature = "loom")]
+use loom::sync::atomic::AtomicUsize;
 
 /// [`Leaf`] is an ordered array of key-value pairs.
 ///

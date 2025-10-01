@@ -2,7 +2,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::any::Any;
 use std::panic::{UnwindSafe, catch_unwind};
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
 use std::thread::yield_now;
 
 use sdd::{Guard, Shared};
@@ -14,7 +14,7 @@ struct OOMAllocator;
 unsafe impl GlobalAlloc for OOMAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // This does not work nicely in the release mode.
-        panic_if(|| rand::random::<u8>().is_multiple_of(3));
+        panic_if(|| rand::random::<u32>().is_multiple_of(2 + PANIC_COUNT.load(Relaxed)));
         unsafe { System.alloc(layout) }
     }
 
@@ -28,12 +28,14 @@ static GLOBAL: OOMAllocator = OOMAllocator;
 
 static OOM_TEST: AtomicBool = const { AtomicBool::new(false) };
 static IN_PANIC: AtomicBool = const { AtomicBool::new(false) };
+static PANIC_COUNT: AtomicU32 = const { AtomicU32::new(0) };
 
 fn panic_if<F: FnOnce() -> bool>(f: F) {
     if OOM_TEST.load(Relaxed) && !IN_PANIC.load(Relaxed) {
         IN_PANIC.swap(true, Relaxed);
         if f() {
             IN_PANIC.store(true, Relaxed);
+            PANIC_COUNT.fetch_add(1, Relaxed);
             panic!("Emulate failure");
         } else {
             IN_PANIC.store(false, Relaxed);
@@ -98,7 +100,10 @@ fn test_oom<F: FnOnce() + Send + UnwindSafe>(f: F) -> Result<(), Box<dyn Any + S
     result
 }
 
-fn wait_cleanup() {
+fn run_test<F: FnOnce(usize)>(f: F, repeat: usize) {
+    PANIC_COUNT.store(0, Relaxed);
+    f(repeat);
+
     while INST_CNT.load(Relaxed) != 0 {
         let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
             OOM_TEST.store(true, Relaxed);
@@ -121,7 +126,6 @@ fn ebr_panic_oom(repeat: usize) {
             assert_ne!(INST_CNT.load(Relaxed), 0);
             drop(r);
         });
-        wait_cleanup();
     }
 }
 
@@ -136,7 +140,6 @@ fn hashmap_panic_oom_1(repeat: usize) {
         assert_eq!(hashmap.read_sync(&k, |_, _| ()).is_some(), result.is_ok());
     }
     drop(hashmap);
-    wait_cleanup();
 }
 
 fn hashmap_panic_oom_2(repeat: usize) {
@@ -151,7 +154,6 @@ fn hashmap_panic_oom_2(repeat: usize) {
         assert_eq!(hashmap.read_sync(&k, |_, _| ()).is_some(), result.is_ok());
     }
     drop(hashmap);
-    wait_cleanup();
 }
 
 fn hashindex_panic_oom_1(repeat: usize) {
@@ -165,7 +167,6 @@ fn hashindex_panic_oom_1(repeat: usize) {
         assert_eq!(hashindex.peek_with(&k, |_, _| ()).is_some(), result.is_ok());
     }
     drop(hashindex);
-    wait_cleanup();
 }
 
 fn hashindex_panic_oom_2(repeat: usize) {
@@ -180,7 +181,6 @@ fn hashindex_panic_oom_2(repeat: usize) {
         assert_eq!(hashindex.peek_with(&k, |_, _| ()).is_some(), result.is_ok());
     }
     drop(hashindex);
-    wait_cleanup();
 }
 
 fn hashcache_panic_oom(repeat: usize) {
@@ -192,10 +192,10 @@ fn hashcache_panic_oom(repeat: usize) {
         assert_eq!(hashcache.get_sync(&k).is_some(), result.is_ok());
     }
     drop(hashcache);
-    wait_cleanup();
 }
 
 fn treeindex_panic_oom_1(repeat: usize) {
+    PANIC_COUNT.store(0, Relaxed);
     let treeindex: TreeIndex<usize, R> = TreeIndex::default();
     for k in 0..repeat {
         let result: Result<(), Box<dyn Any + Send>> = test_oom(|| {
@@ -204,7 +204,6 @@ fn treeindex_panic_oom_1(repeat: usize) {
         assert_eq!(treeindex.peek_with(&k, |_, _| ()).is_some(), result.is_ok());
     }
     drop(treeindex);
-    wait_cleanup();
 }
 
 fn treeindex_panic_oom_2(repeat: usize) {
@@ -219,7 +218,6 @@ fn treeindex_panic_oom_2(repeat: usize) {
         assert!(result.is_err() || treeindex.peek_with(&k, |_, _| ()).is_none());
     }
     drop(treeindex);
-    wait_cleanup();
 }
 
 #[cfg_attr(miri, ignore)]
@@ -228,20 +226,20 @@ fn oom_panic_safety() {
     let repeat = (rand::random::<u32>() % 64 + 256) as usize;
 
     // EBR.
-    ebr_panic_oom(repeat);
+    run_test(ebr_panic_oom, repeat);
 
     // HashMap.
-    hashmap_panic_oom_1(repeat);
-    hashmap_panic_oom_2(repeat);
+    run_test(hashmap_panic_oom_1, repeat);
+    run_test(hashmap_panic_oom_2, repeat);
 
     // HashIndex.
-    hashindex_panic_oom_1(repeat);
-    hashindex_panic_oom_2(repeat);
+    run_test(hashindex_panic_oom_1, repeat);
+    run_test(hashindex_panic_oom_2, repeat);
 
     // HashCache.
-    hashcache_panic_oom(repeat);
+    run_test(hashcache_panic_oom, repeat);
 
     // TreeIndex.
-    treeindex_panic_oom_1(14 * 14 * 14);
-    treeindex_panic_oom_2(14 * 14 * 14);
+    run_test(treeindex_panic_oom_1, repeat);
+    run_test(treeindex_panic_oom_2, repeat);
 }

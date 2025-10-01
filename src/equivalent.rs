@@ -1,5 +1,7 @@
 //! Vendors the [`equivalent`](https://crates.io/crates/equivalent) crate to avoid conflicts.
 
+#![deny(unsafe_code)]
+
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 

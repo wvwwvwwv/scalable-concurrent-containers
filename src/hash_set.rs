@@ -1,5 +1,7 @@
 //! [`HashSet`] is a concurrent hash set.
 
+#![deny(unsafe_code)]
+
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};

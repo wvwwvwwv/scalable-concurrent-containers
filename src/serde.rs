@@ -1,5 +1,7 @@
 //! This module implements helper types and traits for `serde` serialization and deserialization.
 
+#![deny(unsafe_code)]
+
 use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;

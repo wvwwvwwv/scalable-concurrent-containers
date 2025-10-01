@@ -24,7 +24,6 @@ pub const RETIRED: Tag = Tag::First;
 pub struct LeafNode<K, V> {
     /// Children of the [`LeafNode`].
     pub(super) children: Leaf<K, AtomicShared<Leaf<K, V>>>,
-
     /// A child [`Leaf`] that has no upper key bound.
     ///
     /// It stores the maximum key in the node, and key-value pairs are first pushed to this
