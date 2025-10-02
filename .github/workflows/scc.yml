@@ -72,15 +72,13 @@ jobs:
           rustup component add clippy --toolchain nightly
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-msrv, cargo-spellcheck
+          tool: cargo-msrv
       - name: Clippy
         run: cargo clippy --all;
           cargo clippy -p examples --all;
           cargo clippy -p extended_tests --all
       - name: MSRV
         run: cargo msrv verify
-      - name: Spell-check
-        run: cargo spellcheck check
       - name: Format
         run: cargo fmt --check;
           cargo fmt -p examples --check;

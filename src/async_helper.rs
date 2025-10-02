@@ -108,7 +108,7 @@ impl TryWait for Pin<&mut AsyncWait> {
             );
             Pin::new_unchecked(pager_ref)
         };
-        lock.register_pager(&mut pinned_pager, Mode::Wait, false);
+        lock.register_pager(&mut pinned_pager, Mode::WaitExclusive, false);
     }
 }
 
@@ -116,7 +116,7 @@ impl TryWait for () {
     #[inline]
     fn try_wait(&mut self, lock: &Lock) {
         let mut pinned_pager = pin!(Pager::default());
-        lock.register_pager(&mut pinned_pager, Mode::Wait, true);
+        lock.register_pager(&mut pinned_pager, Mode::WaitExclusive, true);
         let _: Result<_, _> = pinned_pager.poll_sync();
     }
 }

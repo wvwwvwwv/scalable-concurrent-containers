@@ -893,10 +893,9 @@ where
             return;
         }
 
+        // Lock the target buckets.
         let (target_index, end_target_index) =
             Self::from_index_to_range(old_array.len(), current_array.len(), old_index);
-
-        // Lock the target buckets.
         for i in target_index..end_target_index {
             let writer = unsafe {
                 Writer::lock_async(current_array.bucket(i), sendable_guard)
@@ -905,16 +904,23 @@ where
             };
             forget(writer);
         }
-        let unlock = ExitGuard::new((), |()| {
-            for i in target_index..end_target_index {
-                let writer = Writer::from_bucket(current_array.bucket(i));
-                drop(writer);
-            }
-        });
+
+        // It may seem inefficient to recalculate, but beneficial for reducing the stack size.
+        let (target_index, end_target_index) =
+            Self::from_index_to_range(old_array.len(), current_array.len(), old_index);
+        let unlock = ExitGuard::new(
+            (current_array, target_index, end_target_index),
+            |(current_array, target_index, end_target_index)| {
+                for i in target_index..end_target_index {
+                    let writer = Writer::from_bucket(current_array.bucket(i));
+                    drop(writer);
+                }
+            },
+        );
 
         self.relocate_bucket(
-            current_array,
-            target_index,
+            unlock.0,
+            unlock.1,
             old_array,
             old_index,
             &old_writer,
@@ -1098,7 +1104,7 @@ where
 
     /// Starts incremental rehashing.
     #[inline]
-    fn start_incremental_rehash(&self, old_array: &BucketArray<K, V, L, TYPE>) -> Option<usize> {
+    fn start_incremental_rehash(old_array: &BucketArray<K, V, L, TYPE>) -> Option<usize> {
         // Assign itself a range of `Bucket` instances to rehash.
         //
         // Aside from the range, it increments the implicit reference counting field in
@@ -1128,7 +1134,6 @@ where
     /// Ends incremental rehashing.
     #[inline]
     fn end_incremental_rehash(
-        &self,
         current_array: &BucketArray<K, V, L, TYPE>,
         old_array: &BucketArray<K, V, L, TYPE>,
         prev: usize,
@@ -1172,31 +1177,42 @@ where
         sendable_guard: &'g SendableGuard,
     ) {
         if let Some(old_array) = sendable_guard.load(current_array.old_array_ptr(), Acquire) {
-            let Some(current) = self.start_incremental_rehash(old_array) else {
+            let Some(current) = Self::start_incremental_rehash(old_array) else {
                 return;
             };
 
-            let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
-                self.end_incremental_rehash(current_array, old_array, prev, success);
-            });
+            let mut rehashing_guard = ExitGuard::new(
+                (current, current_array, old_array),
+                |(prev, current_array, old_array)| {
+                    Self::end_incremental_rehash(
+                        current_array,
+                        old_array,
+                        prev,
+                        prev == usize::MAX,
+                    );
+                },
+            );
 
-            for index in current..(current + BUCKET_LEN).min(old_array.len()) {
-                let old_bucket = old_array.bucket(index);
+            for bucket_index in
+                rehashing_guard.0..(rehashing_guard.0 + BUCKET_LEN).min(old_array.len())
+            {
+                let old_bucket = rehashing_guard.2.bucket(bucket_index);
                 let writer = Writer::lock_async(old_bucket, sendable_guard).await;
                 if let Some(writer) = writer {
                     self.relocate_bucket_async(
-                        current_array,
-                        old_array,
-                        index,
+                        rehashing_guard.1,
+                        rehashing_guard.2,
+                        bucket_index,
                         writer,
                         sendable_guard,
                     )
                     .await;
                 }
-                debug_assert!(current_array.has_old_array());
+                debug_assert!(rehashing_guard.1.has_old_array());
             }
 
-            rehashing_guard.1 = true;
+            // `usize::MAX` indicates that the rehashing is complete.
+            rehashing_guard.0 = usize::MAX;
         }
     }
 
@@ -1209,16 +1225,16 @@ where
         guard: &'g Guard,
     ) -> bool {
         if let Some(old_array) = current_array.old_array(guard).as_ref() {
-            let Some(current) = self.start_incremental_rehash(old_array) else {
+            let Some(current) = Self::start_incremental_rehash(old_array) else {
                 return !current_array.has_old_array();
             };
 
             let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
-                self.end_incremental_rehash(current_array, old_array, prev, success);
+                Self::end_incremental_rehash(current_array, old_array, prev, success);
             });
 
-            for index in current..(current + BUCKET_LEN).min(old_array.len()) {
-                let old_bucket = old_array.bucket(index);
+            for bucket_index in current..(current + BUCKET_LEN).min(old_array.len()) {
+                let old_bucket = old_array.bucket(bucket_index);
                 let writer = if TRY_LOCK {
                     let Ok(writer) = Writer::try_lock(old_bucket) else {
                         return false;
@@ -1231,7 +1247,7 @@ where
                     if !self.relocate_bucket_sync::<TRY_LOCK>(
                         current_array,
                         old_array,
-                        index,
+                        bucket_index,
                         writer,
                         guard,
                     ) {

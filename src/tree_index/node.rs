@@ -257,11 +257,11 @@ where
                     }
                 }
                 Err((new_root, _)) => {
-                    // The root has been cleared.
+                    // The root has been changed.
                     if let Some(Self::Internal(internal_node)) = new_root.as_deref() {
                         internal_node.finish_split();
                     }
-                    // The old root need to rollback the split operation.
+                    // The old root needs to rollback the split operation.
                     *exit_guard = true;
                 }
             }
