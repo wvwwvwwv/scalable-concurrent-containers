@@ -1189,7 +1189,7 @@ mod hashindex {
     #[test]
     fn clone() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        let hashindex: HashIndex<usize, R> = HashIndex::default();
+        let hashindex: HashIndex<usize, R> = HashIndex::with_capacity(1024);
 
         let workload_size = 256;
 
