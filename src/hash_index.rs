@@ -11,7 +11,7 @@ use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-use sdd::{AtomicShared, Guard, Shared};
+use sdd::{AtomicShared, Guard, Shared, Tag};
 
 use super::Equivalent;
 use super::hash_table::HashTable;
@@ -101,16 +101,16 @@ where
 /// An iterator over the entries of a [`HashIndex`].
 ///
 /// An [`Iter`] iterates over all the entries that survive the [`Iter`].
-pub struct Iter<'h, 'g, K, V, H = RandomState>
+pub struct Iter<'h, K, V, H = RandomState>
 where
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
-    bucket_array: Option<&'g BucketArray<K, V, (), INDEX>>,
+    bucket_array: Option<&'h BucketArray<K, V, (), INDEX>>,
     index: usize,
-    bucket: Option<&'g Bucket<K, V, (), INDEX>>,
-    entry_ptr: EntryPtr<'g, K, V, INDEX>,
-    guard: &'g Guard,
+    bucket: Option<&'h Bucket<K, V, (), INDEX>>,
+    entry_ptr: EntryPtr<'h, K, V, INDEX>,
+    guard: &'h Guard,
 }
 
 impl<K, V, H> HashIndex<K, V, H>
@@ -1170,13 +1170,9 @@ where
     /// for iter in hashindex.iter(&guard) {
     ///     assert_eq!(iter, (&1, &0));
     /// }
-    ///
-    /// drop(hashindex);
-    ///
-    /// assert_eq!(entry_ref, (&1, &0));
     /// ```
     #[inline]
-    pub fn iter<'h, 'g>(&'h self, guard: &'g Guard) -> Iter<'h, 'g, K, V, H> {
+    pub fn iter<'h>(&'h self, guard: &'h Guard) -> Iter<'h, K, V, H> {
         Iter {
             hashindex: self,
             bucket_array: None,
@@ -1284,6 +1280,23 @@ where
     #[inline]
     fn default() -> Self {
         Self::with_hasher(H::default())
+    }
+}
+
+impl<K, V, H> Drop for HashIndex<K, V, H>
+where
+    H: BuildHasher,
+{
+    #[inline]
+    fn drop(&mut self) {
+        self.bucket_array
+            .swap((None, Tag::None), Relaxed)
+            .0
+            .map(|a| unsafe {
+                // The entire array does not need to wait for an epoch change as no references will
+                // remain outside the lifetime of the `HashIndex`.
+                a.drop_in_place()
+            });
     }
 }
 
@@ -2029,7 +2042,7 @@ where
     }
 }
 
-impl<K, V, H> Debug for Iter<'_, '_, K, V, H>
+impl<K, V, H> Debug for Iter<'_, K, V, H>
 where
     K: 'static + Eq + Hash,
     V: 'static,
@@ -2044,13 +2057,13 @@ where
     }
 }
 
-impl<'g, K, V, H> Iterator for Iter<'_, 'g, K, V, H>
+impl<'h, K, V, H> Iterator for Iter<'h, K, V, H>
 where
     K: 'static + Eq + Hash,
     V: 'static,
     H: BuildHasher,
 {
-    type Item = (&'g K, &'g V);
+    type Item = (&'h K, &'h V);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -2131,7 +2144,7 @@ where
     }
 }
 
-impl<K, V, H> FusedIterator for Iter<'_, '_, K, V, H>
+impl<K, V, H> FusedIterator for Iter<'_, K, V, H>
 where
     K: 'static + Eq + Hash,
     V: 'static,
@@ -2139,7 +2152,7 @@ where
 {
 }
 
-impl<K, V, H> UnwindSafe for Iter<'_, '_, K, V, H>
+impl<K, V, H> UnwindSafe for Iter<'_, K, V, H>
 where
     K: 'static + Eq + Hash + UnwindSafe,
     V: 'static + UnwindSafe,

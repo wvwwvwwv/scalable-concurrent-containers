@@ -1050,9 +1050,9 @@ mod hashindex {
     static_assertions::assert_not_impl_any!(HashIndex<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_index::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashIndex<String, String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
+    static_assertions::assert_impl_all!(Iter<'static, String, String>: UnwindSafe);
     static_assertions::assert_not_impl_any!(HashIndex<String, *const String>: Send, Sync);
-    static_assertions::assert_not_impl_any!(Iter<'static, 'static, String, *const String>: Send, Sync);
+    static_assertions::assert_not_impl_any!(Iter<'static, String, *const String>: Send, Sync);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -1202,11 +1202,7 @@ mod hashindex {
             assert!(hashindex_clone.peek_with(&k, |_, _| ()).is_some());
         }
         drop(hashindex_clone);
-
-        while INST_CNT.load(Relaxed) != 0 {
-            drop(Guard::new());
-            thread::yield_now();
-        }
+        assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
     #[test]

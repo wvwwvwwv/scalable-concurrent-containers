@@ -198,7 +198,7 @@ if let Some(mut o) = hashindex.get_sync(&1) {
 };
 ```
 
-An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#hashindex) because any derived references can survive as long as the associated `ebr::Guard` lives.
+An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#hashindex).
 
 ```rust
 use scc::{Guard, HashIndex};
@@ -215,14 +215,8 @@ let guard = Guard::new();
 // An `Guard` has to be supplied to `iter`.
 let mut iter = hashindex.iter(&guard);
 
-// The derived reference can live as long as `guard`.
 let entry_ref = iter.next().unwrap();
 assert_eq!(iter.next(), None);
-
-drop(hashindex);
-
-// The entry can be read after `hashindex` is dropped.
-assert_eq!(entry_ref, (&1, &1));
 ```
 
 ## `HashCache`
