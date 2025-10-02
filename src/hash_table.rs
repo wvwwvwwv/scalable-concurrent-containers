@@ -905,7 +905,11 @@ where
             forget(writer);
         }
 
-        // It may seem inefficient to recalculate, but beneficial for reducing the stack size.
+        // It may seem inefficient to reevaluate the same values, but it is beneficial for reducing
+        // the `Future` size.
+        let Some(old_array) = current_array.old_array(sendable_guard.guard()).as_ref() else {
+            return;
+        };
         let (target_index, end_target_index) =
             Self::from_index_to_range(old_array.len(), current_array.len(), old_index);
         let unlock = ExitGuard::new(

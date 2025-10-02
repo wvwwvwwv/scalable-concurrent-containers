@@ -120,7 +120,7 @@ mod hashmap {
 
     #[test]
     fn future_size() {
-        let limit = 616;
+        let limit = 608;
         let hashmap: HashMap<usize, usize> = HashMap::default();
         let insert_size = size_of_val(&hashmap.insert_async(0, 0));
         assert!(insert_size < limit, "{insert_size}");

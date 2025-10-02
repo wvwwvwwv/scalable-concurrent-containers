@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 use sdd::{AtomicShared, Guard, Ptr, Tag};
 
-use super::bucket::{BUCKET_LEN, Bucket, DataBlock, INDEX, LruList};
+use super::bucket::{BUCKET_LEN, Bucket, DataBlock, LruList};
 use crate::exit_guard::ExitGuard;
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
@@ -224,9 +224,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 
 impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
     fn drop(&mut self) {
-        if TYPE != INDEX && !self.old_array.is_null(Relaxed) {
-            // The `BucketArray` cannot be dropped immediately if `TYPE == OPTIMISTIC`, because
-            // entry references can be held as long as the associated guard is alive.
+        if !self.old_array.is_null(Relaxed) {
             unsafe {
                 self.old_array
                     .swap((None, Tag::None), Relaxed)
@@ -263,6 +261,7 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
 }
 
 unsafe impl<K: Send, V: Send, L: LruList, const TYPE: char> Send for BucketArray<K, V, L, TYPE> {}
+
 unsafe impl<K: Send + Sync, V: Send + Sync, L: LruList, const TYPE: char> Sync
     for BucketArray<K, V, L, TYPE>
 {
@@ -277,6 +276,7 @@ impl<K: UnwindSafe, V: UnwindSafe, L: LruList, const TYPE: char> UnwindSafe
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::hash_table::bucket::INDEX;
 
     #[test]
     fn array() {

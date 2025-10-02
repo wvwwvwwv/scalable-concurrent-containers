@@ -752,8 +752,7 @@ where
 
     /// Returns a guarded reference to the value for the specified key without acquiring locks.
     ///
-    /// Returns `None` if the key does not exist. The returned reference can survive as long as the
-    /// associated [`Guard`] is alive.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Note
     ///
@@ -781,7 +780,7 @@ where
     /// assert_eq!(*value_ref, 10);
     /// ```
     #[inline]
-    pub fn peek<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
+    pub fn peek<'h, Q>(&'h self, key: &Q, guard: &'h Guard) -> Option<&'h V>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {

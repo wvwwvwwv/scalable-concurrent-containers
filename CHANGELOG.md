@@ -3,6 +3,11 @@
 
 ## Version 3
 
+3.2.1
+
+* API update: `HashIndex::peek` no longer allows entry references to outlive the `HashIndex`: [#198](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/198).
+* More memory usage optimization: [#194](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/194).
+
 3.2.0
 
 * API update: `hash_index::OccupiedEntry::update` does not consume itself.
