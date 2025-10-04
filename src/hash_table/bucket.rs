@@ -368,7 +368,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             link.metadata
                 .occupied_bitmap
                 .store(occupied_bitmap, Relaxed);
-            if TYPE != INDEX && occupied_bitmap == 0 {
+            if occupied_bitmap == 0 {
                 from_entry_ptr.unlink(from_writer, link, guard);
             }
         } else {
@@ -382,7 +382,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
     }
 
-    /// Drops entries in the [`DataBlock`] based on the metadata of the [`Bucket`].
+    /// Drops entries in the [`DataBlock`] when the bucket array is being dropped.
     ///
     /// The [`Bucket`] and the [`DataBlock`] should never be used afterward.
     pub(super) fn drop_entries(&self, data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>) {
@@ -390,11 +390,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             let mut next = self.metadata.link.swap((None, Tag::None), Acquire);
             while let Some(current) = next.0 {
                 next = current.metadata.link.swap((None, Tag::None), Acquire);
-                let released = if TYPE == INDEX {
-                    current.release()
-                } else {
-                    unsafe { current.drop_in_place() }
-                };
+                let released = unsafe { current.drop_in_place() };
                 debug_assert!(TYPE == INDEX || released);
             }
         }
@@ -836,11 +832,7 @@ impl<K, V, L: LruList, const TYPE: char> Writer<K, V, L, TYPE> {
             let mut link = self.metadata.link.swap((None, Tag::None), Acquire).0;
             while let Some(current) = link {
                 link = current.metadata.link.swap((None, Tag::None), Acquire).0;
-                let released = if TYPE == INDEX {
-                    current.release()
-                } else {
-                    unsafe { current.drop_in_place() }
-                };
+                let released = unsafe { current.drop_in_place() };
                 debug_assert!(TYPE == INDEX || released);
             }
         }
@@ -1070,6 +1062,8 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
                 unsafe { l.drop_in_place() }
             }
         });
+
+        // `old_link` still holds a strong reference to the next `LinkedBucket` if `TYPE == INDEX`.
         debug_assert!(TYPE == INDEX || released);
 
         if self.current_link_ptr.is_null() {
