@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.3.1
+
+* More conservative grow/shrink policies in `Hash*` containers to avoid wrong load factor estimation.
+
 3.3.0
 
 * API update: `HashIndex::{peek, iter}` no longer allow entry references to outlive the `HashIndex`: [#198](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/198).

@@ -1278,7 +1278,9 @@ where
         }
 
         let sample_size = current_array.sample_size();
-        let threshold = sample_size * (BUCKET_LEN / 8) * 7;
+
+        // Try to grow if the estimated load factor is greater than `15/16`.
+        let threshold = sample_size * (BUCKET_LEN / 16) * 15;
         if num_entries > threshold
             || (1..sample_size).any(|i| {
                 num_entries += current_array
@@ -1307,6 +1309,8 @@ where
             || TYPE == INDEX
         {
             let sample_size = current_array.sample_size();
+
+            // Try to shrink if the estimated load factor is less than `1/16`.
             let shrink_threshold = sample_size * BUCKET_LEN / 16;
             let rebuild_threshold = sample_size / 2;
             let mut num_entries = 0;
@@ -1357,14 +1361,14 @@ where
         }
         debug_assert!(!current_array.has_old_array());
 
-        // If the estimated load factor is greater than `13/16`, then the hash table grows up to
-        // `usize::BITS / 2` times larger. On the other hand, if the estimated load factor is less
-        // than `1/8`, then the hash table shrinks to fit.
+        // If the estimated load factor is greater than `7/8`, then the hash table grows. On the
+        // other hand, if the estimated load factor is less than `1/8`, then the hash table shrinks
+        // to fit.
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
         let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
-        let new_capacity = if estimated_num_entries > (capacity / 16) * 13 {
+        let new_capacity = if estimated_num_entries > (capacity / 8) * 7 {
             if capacity == self.maximum_capacity() {
                 // Do not resize if the capacity cannot be increased.
                 capacity
