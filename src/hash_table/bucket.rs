@@ -832,7 +832,12 @@ impl<K, V, L: LruList, const TYPE: char> Writer<K, V, L, TYPE> {
             let mut link = self.metadata.link.swap((None, Tag::None), Acquire).0;
             while let Some(current) = link {
                 link = current.metadata.link.swap((None, Tag::None), Acquire).0;
-                let released = unsafe { current.drop_in_place() };
+                let released = if TYPE == INDEX {
+                    // The `LinkedBucket` cannot be dropped immediately, as it may still be in use.
+                    current.release()
+                } else {
+                    unsafe { current.drop_in_place() }
+                };
                 debug_assert!(TYPE == INDEX || released);
             }
         }
