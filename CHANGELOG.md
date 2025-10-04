@@ -6,6 +6,7 @@
 3.3.1
 
 * More conservative grow/shrink policies in `Hash*` containers to avoid wrong load factor estimation.
+* Deallocate `HashIndex` entries as early as possible: [#198](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/198).
 
 3.3.0
 
