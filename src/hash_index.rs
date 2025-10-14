@@ -90,8 +90,7 @@ where
 /// The [`HashIndex`] does not shrink the capacity below the reserved capacity.
 pub struct Reserve<'h, K, V, H = RandomState>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
@@ -192,8 +191,7 @@ where
 
 impl<K, V, H> HashIndex<K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Temporarily increases the minimum capacity of the [`HashIndex`].
@@ -241,121 +239,6 @@ where
                 hashindex: self,
                 additional,
             })
-        }
-    }
-
-    /// Gets the entry associated with the given key in the map for in-place manipulation.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<char, u32> = HashIndex::default();
-    ///
-    /// let future_entry = hashindex.entry_async('b');
-    /// ```
-    #[inline]
-    pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
-        let hash = self.hash(&key);
-        let sendable_guard = pin!(SendableGuard::default());
-        let locked_bucket = self.writer_async(hash, &sendable_guard).await;
-        let prolonged_guard = self.prolonged_guard_ref(sendable_guard.guard());
-        let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
-        if entry_ptr.is_valid() {
-            Entry::Occupied(OccupiedEntry {
-                hashindex: self,
-                locked_bucket,
-                entry_ptr,
-            })
-        } else {
-            let vacant_entry = VacantEntry {
-                hashindex: self,
-                key,
-                hash,
-                locked_bucket,
-            };
-            Entry::Vacant(vacant_entry)
-        }
-    }
-
-    /// Gets the entry associated with the given key in the map for in-place manipulation.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<char, u32> = HashIndex::default();
-    ///
-    /// for ch in "a short treatise on fungi".chars() {
-    ///     unsafe {
-    ///         hashindex.entry_sync(ch).and_modify(|counter| *counter += 1).or_insert(1);
-    ///     }
-    /// }
-    ///
-    /// assert_eq!(hashindex.peek_with(&'s', |_, v| *v), Some(2));
-    /// assert_eq!(hashindex.peek_with(&'t', |_, v| *v), Some(3));
-    /// assert!(hashindex.peek_with(&'y', |_, v| *v).is_none());
-    /// ```
-    #[inline]
-    pub fn entry_sync(&self, key: K) -> Entry<'_, K, V, H> {
-        let hash = self.hash(&key);
-        let guard = Guard::new();
-        let prolonged_guard = self.prolonged_guard_ref(&guard);
-        let locked_bucket = self.writer_sync(hash, prolonged_guard);
-        let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
-        if entry_ptr.is_valid() {
-            Entry::Occupied(OccupiedEntry {
-                hashindex: self,
-                locked_bucket,
-                entry_ptr,
-            })
-        } else {
-            let vacant_entry = VacantEntry {
-                hashindex: self,
-                key,
-                hash,
-                locked_bucket,
-            };
-            Entry::Vacant(vacant_entry)
-        }
-    }
-
-    /// Tries to get the entry associated with the given key in the map for in-place manipulation.
-    ///
-    /// Returns `None` if the entry could not be locked.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<usize, usize> = HashIndex::default();
-    ///
-    /// assert!(hashindex.insert_sync(0, 1).is_ok());
-    /// assert!(hashindex.try_entry(0).is_some());
-    /// ```
-    #[inline]
-    pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {
-        let hash = self.hash(&key);
-        let guard = Guard::new();
-        let prolonged_guard = self.prolonged_guard_ref(&guard);
-        let locked_bucket = self.try_reserve_bucket(hash, prolonged_guard)?;
-        let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
-        if entry_ptr.is_valid() {
-            Some(Entry::Occupied(OccupiedEntry {
-                hashindex: self,
-                locked_bucket,
-                entry_ptr,
-            }))
-        } else {
-            Some(Entry::Vacant(VacantEntry {
-                hashindex: self,
-                key,
-                hash,
-                locked_bucket,
-            }))
         }
     }
 
@@ -486,6 +369,11 @@ where
 
     /// Inserts a key-value pair into the [`HashIndex`].
     ///
+    /// # Safety
+    ///
+    /// `T::drop` can be run after the [`HashIndex`] is dropped, therefore it is safe only if
+    /// `T::drop` does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`.
+    ///
     /// # Note
     ///
     /// If the key exists, the value is *not* updated.
@@ -499,11 +387,11 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    /// let future_insert = hashindex.insert_async(11, 17);
+    /// let hashindex: HashIndex<u64, &u32> = HashIndex::default();
+    /// let future_insert = unsafe { hashindex.insert_unchecked_async(11, &17) };
     /// ```
     #[inline]
-    pub async fn insert_async(&self, key: K, val: V) -> Result<(), (K, V)> {
+    pub async unsafe fn insert_unchecked_async(&self, key: K, val: V) -> Result<(), (K, V)> {
         let hash = self.hash(&key);
         let sendable_guard = pin!(SendableGuard::default());
         let locked_bucket = self.writer_async(hash, &sendable_guard).await;
@@ -519,6 +407,11 @@ where
 
     /// Inserts a key-value pair into the [`HashIndex`].
     ///
+    /// # Safety
+    ///
+    /// `T::drop` can be run after the [`HashIndex`] is dropped, therefore it is safe only if
+    /// `T::drop` does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`.
+    ///
     /// # Note
     ///
     /// If the key exists, the value is *not* updated.
@@ -532,13 +425,14 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    /// let value: u32 = 1;
+    /// let hashindex: HashIndex<u64, &u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert_sync(1, 0).is_ok());
-    /// assert_eq!(hashindex.insert_sync(1, 1).unwrap_err(), (1, 1));
+    /// assert!(unsafe { hashindex.insert_unchecked_sync(1, &value).is_ok() });
+    /// assert_eq!(unsafe { hashindex.insert_unchecked_sync(1, &value).unwrap_err() }, (1, &value));
     /// ```
     #[inline]
-    pub fn insert_sync(&self, key: K, val: V) -> Result<(), (K, V)> {
+    pub unsafe fn insert_unchecked_sync(&self, key: K, val: V) -> Result<(), (K, V)> {
         let hash = self.hash(&key);
         let guard = Guard::new();
         let locked_bucket = self.writer_sync(hash, &guard);
@@ -1184,6 +1078,196 @@ where
     }
 }
 
+impl<K, V, H> HashIndex<K, V, H>
+where
+    K: 'static + Eq + Hash,
+    V: 'static,
+    H: BuildHasher,
+{
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<char, u32> = HashIndex::default();
+    ///
+    /// let future_entry = hashindex.entry_async('b');
+    /// ```
+    #[inline]
+    pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
+        let hash = self.hash(&key);
+        let sendable_guard = pin!(SendableGuard::default());
+        let locked_bucket = self.writer_async(hash, &sendable_guard).await;
+        let prolonged_guard = self.prolonged_guard_ref(sendable_guard.guard());
+        let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
+            Entry::Occupied(OccupiedEntry {
+                hashindex: self,
+                locked_bucket,
+                entry_ptr,
+            })
+        } else {
+            let vacant_entry = VacantEntry {
+                hashindex: self,
+                key,
+                hash,
+                locked_bucket,
+            };
+            Entry::Vacant(vacant_entry)
+        }
+    }
+
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<char, u32> = HashIndex::default();
+    ///
+    /// for ch in "a short treatise on fungi".chars() {
+    ///     unsafe {
+    ///         hashindex.entry_sync(ch).and_modify(|counter| *counter += 1).or_insert(1);
+    ///     }
+    /// }
+    ///
+    /// assert_eq!(hashindex.peek_with(&'s', |_, v| *v), Some(2));
+    /// assert_eq!(hashindex.peek_with(&'t', |_, v| *v), Some(3));
+    /// assert!(hashindex.peek_with(&'y', |_, v| *v).is_none());
+    /// ```
+    #[inline]
+    pub fn entry_sync(&self, key: K) -> Entry<'_, K, V, H> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        let locked_bucket = self.writer_sync(hash, prolonged_guard);
+        let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
+            Entry::Occupied(OccupiedEntry {
+                hashindex: self,
+                locked_bucket,
+                entry_ptr,
+            })
+        } else {
+            let vacant_entry = VacantEntry {
+                hashindex: self,
+                key,
+                hash,
+                locked_bucket,
+            };
+            Entry::Vacant(vacant_entry)
+        }
+    }
+
+    /// Tries to get the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// Returns `None` if the entry could not be locked.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<usize, usize> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert_sync(0, 1).is_ok());
+    /// assert!(hashindex.try_entry(0).is_some());
+    /// ```
+    #[inline]
+    pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        let locked_bucket = self.try_reserve_bucket(hash, prolonged_guard)?;
+        let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
+            Some(Entry::Occupied(OccupiedEntry {
+                hashindex: self,
+                locked_bucket,
+                entry_ptr,
+            }))
+        } else {
+            Some(Entry::Vacant(VacantEntry {
+                hashindex: self,
+                key,
+                hash,
+                locked_bucket,
+            }))
+        }
+    }
+
+    /// Inserts a key-value pair into the [`HashIndex`].
+    ///
+    /// # Note
+    ///
+    /// If the key exists, the value is *not* updated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error containing the supplied key-value pair if the key exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    /// let future_insert = hashindex.insert_async(11, 17);
+    /// ```
+    #[inline]
+    pub async fn insert_async(&self, key: K, val: V) -> Result<(), (K, V)> {
+        let hash = self.hash(&key);
+        let sendable_guard = pin!(SendableGuard::default());
+        let locked_bucket = self.writer_async(hash, &sendable_guard).await;
+        let guard = sendable_guard.guard();
+        let partial_hash = hash;
+        if locked_bucket.search(&key, hash, guard).is_valid() {
+            Err((key, val))
+        } else {
+            locked_bucket.insert(partial_hash, (key, val), guard);
+            Ok(())
+        }
+    }
+
+    /// Inserts a key-value pair into the [`HashIndex`].
+    ///
+    /// # Note
+    ///
+    /// If the key exists, the value is *not* updated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair if the key exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
+    /// assert_eq!(hashindex.insert_sync(1, 1).unwrap_err(), (1, 1));
+    /// ```
+    #[inline]
+    pub fn insert_sync(&self, key: K, val: V) -> Result<(), (K, V)> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        let locked_bucket = self.writer_sync(hash, &guard);
+        if locked_bucket.search(&key, hash, &guard).is_valid() {
+            Err((key, val))
+        } else {
+            locked_bucket
+                .writer
+                .insert(locked_bucket.data_block, hash, (key, val), &guard);
+            Ok(())
+        }
+    }
+}
+
 impl<K, V, H> Clone for HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
@@ -1202,8 +1286,8 @@ where
 
 impl<K, V, H> Debug for HashIndex<K, V, H>
 where
-    K: 'static + Debug + Eq + Hash,
-    V: 'static + Debug,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1215,8 +1299,7 @@ where
 
 impl<K, V> HashIndex<K, V, RandomState>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
 {
     /// Creates an empty default [`HashIndex`].
     ///
@@ -1259,8 +1342,6 @@ where
 
 impl<K, V, H> Default for HashIndex<K, V, H>
 where
-    K: 'static,
-    V: 'static,
     H: BuildHasher + Default,
 {
     /// Creates an empty default [`HashIndex`].
@@ -1322,8 +1403,7 @@ where
 
 impl<K, V, H> HashTable<K, V, H, (), INDEX> for HashIndex<K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -1346,8 +1426,8 @@ where
 
 impl<K, V, H> PartialEq for HashIndex<K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static + PartialEq,
+    K: Eq + Hash,
+    V: PartialEq,
     H: BuildHasher,
 {
     #[inline]
@@ -1539,8 +1619,7 @@ where
 
 impl<'h, K, V, H> OccupiedEntry<'h, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Gets a reference to the key in the entry.
@@ -1818,8 +1897,7 @@ where
 
 impl<K, V, H> OccupiedEntry<'_, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static,
+    K: Clone + Eq + Hash,
     H: BuildHasher,
 {
     /// Updates the entry by inserting a new entry and marking the existing entry removed.
@@ -1859,8 +1937,8 @@ where
 
 impl<K, V, H> Debug for OccupiedEntry<'_, K, V, H>
 where
-    K: 'static + Debug + Eq + Hash,
-    V: 'static + Debug,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1874,8 +1952,8 @@ where
 
 impl<K, V, H> Deref for OccupiedEntry<'_, K, V, H>
 where
-    K: 'static + Debug + Eq + Hash,
-    V: 'static + Debug,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     type Target = V;
@@ -1971,8 +2049,7 @@ where
 
 impl<K, V, H> Reserve<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Returns the number of reserved slots.
@@ -1985,8 +2062,7 @@ where
 
 impl<K, V, H> AsRef<HashIndex<K, V, H>> for Reserve<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -1997,8 +2073,7 @@ where
 
 impl<K, V, H> Debug for Reserve<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -2009,8 +2084,7 @@ where
 
 impl<K, V, H> Deref for Reserve<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     type Target = HashIndex<K, V, H>;
@@ -2023,8 +2097,7 @@ where
 
 impl<K, V, H> Drop for Reserve<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -2044,8 +2117,7 @@ where
 
 impl<K, V, H> Debug for Iter<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -2059,8 +2131,7 @@ where
 
 impl<'h, K, V, H> Iterator for Iter<'h, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     type Item = (&'h K, &'h V);
@@ -2146,16 +2217,15 @@ where
 
 impl<K, V, H> FusedIterator for Iter<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
 }
 
 impl<K, V, H> UnwindSafe for Iter<'_, K, V, H>
 where
-    K: 'static + Eq + Hash + UnwindSafe,
-    V: 'static + UnwindSafe,
+    K: Eq + Hash + UnwindSafe,
+    V: UnwindSafe,
     H: BuildHasher + UnwindSafe,
 {
 }

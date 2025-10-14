@@ -1241,6 +1241,50 @@ mod hashindex {
         assert_eq!(hashindex2.len(), 0);
     }
 
+    #[test]
+    fn local_ref() {
+        struct L<'a>(&'a AtomicUsize);
+        impl<'a> L<'a> {
+            fn new(cnt: &'a AtomicUsize) -> Self {
+                cnt.fetch_add(1, Relaxed);
+                L(cnt)
+            }
+        }
+        impl Drop for L<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Relaxed);
+            }
+        }
+
+        let workload_size = 256;
+        let cnt = AtomicUsize::new(0);
+        let hashindex: HashIndex<usize, L> = HashIndex::default();
+
+        for k in 0..workload_size {
+            assert!(unsafe { hashindex.insert_unchecked_sync(k, L::new(&cnt)).is_ok() });
+        }
+        hashindex.retain_sync(|k, _| {
+            assert!(*k < workload_size);
+            true
+        });
+        assert_eq!(cnt.load(Relaxed), workload_size);
+
+        for k in 0..workload_size / 2 {
+            assert!(hashindex.remove_sync(&k));
+        }
+        hashindex.retain_sync(|k, _| {
+            assert!(*k >= workload_size / 2);
+            true
+        });
+
+        drop(hashindex);
+
+        while cnt.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+        }
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn insert_peek_remove_async() {
