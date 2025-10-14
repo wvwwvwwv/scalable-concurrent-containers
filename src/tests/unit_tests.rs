@@ -205,8 +205,7 @@ mod hashmap {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let hashmap: HashMap<usize, R> = HashMap::default();
-        let workload_size = 1_usize << 8;
-        for _ in 0..2 {
+        for workload_size in 2..64 {
             for k in 0..workload_size {
                 assert!(hashmap.insert_sync(k, R::new(&INST_CNT)).is_ok());
             }
@@ -1126,46 +1125,35 @@ mod hashindex {
     #[tokio::test]
     async fn clear_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        let hashindex: HashIndex<usize, R> = HashIndex::default();
 
-        let workload_size = 1_usize << 18;
-
+        let workload_size = ((1_usize << 18) / 16) * 15;
         for _ in 0..2 {
+            let hashindex: HashIndex<usize, R> = HashIndex::default();
             for k in 0..workload_size {
                 assert!(hashindex.insert_async(k, R::new(&INST_CNT)).await.is_ok());
             }
             assert!(INST_CNT.load(Relaxed) >= workload_size);
             assert_eq!(hashindex.len(), workload_size);
             hashindex.clear_async().await;
-        }
-        drop(hashindex);
-
-        while INST_CNT.load(Relaxed) != 0 {
-            Guard::new().accelerate();
-            tokio::task::yield_now().await;
+            drop(hashindex);
+            assert_eq!(INST_CNT.load(Relaxed), 0);
         }
     }
 
     #[test]
     fn clear_sync() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        let hashindex: HashIndex<usize, R> = HashIndex::default();
 
-        let workload_size = 1_usize << 8;
-
-        for _ in 0..2 {
+        for workload_size in 2..64 {
+            let hashindex: HashIndex<usize, R> = HashIndex::default();
             for k in 0..workload_size {
                 assert!(hashindex.insert_sync(k, R::new(&INST_CNT)).is_ok());
             }
             assert!(INST_CNT.load(Relaxed) >= workload_size);
             assert_eq!(hashindex.len(), workload_size);
             hashindex.clear_sync();
-        }
-        drop(hashindex);
-
-        while INST_CNT.load(Relaxed) != 0 {
-            Guard::new().accelerate();
-            thread::yield_now();
+            drop(hashindex);
+            assert_eq!(INST_CNT.load(Relaxed), 0);
         }
     }
 
@@ -1180,10 +1168,7 @@ mod hashindex {
         assert_eq!(hashindex.len(), workload_size / 2);
         drop(hashindex);
 
-        while INST_CNT.load(Relaxed) != 0 {
-            Guard::new().accelerate();
-            thread::yield_now();
-        }
+        assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
     #[test]
@@ -1239,6 +1224,46 @@ mod hashindex {
         }
         assert_eq!(hashindex1.len(), 0);
         assert_eq!(hashindex2.len(), 0);
+    }
+
+    #[test]
+    fn local_ref() {
+        struct L<'a>(&'a AtomicUsize);
+        impl<'a> L<'a> {
+            fn new(cnt: &'a AtomicUsize) -> Self {
+                cnt.fetch_add(1, Relaxed);
+                L(cnt)
+            }
+        }
+        impl Drop for L<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Relaxed);
+            }
+        }
+
+        let workload_size = 256;
+        let cnt = AtomicUsize::new(0);
+        let hashindex: HashIndex<usize, L> = HashIndex::default();
+
+        for k in 0..workload_size {
+            assert!(hashindex.insert_sync(k, L::new(&cnt)).is_ok());
+        }
+        hashindex.retain_sync(|k, _| {
+            assert!(*k < workload_size);
+            true
+        });
+        assert_eq!(cnt.load(Relaxed), workload_size);
+
+        for k in 0..workload_size / 2 {
+            assert!(hashindex.remove_sync(&k));
+        }
+        hashindex.retain_sync(|k, _| {
+            assert!(*k >= workload_size / 2);
+            true
+        });
+
+        drop(hashindex);
+        assert_eq!(cnt.load(Relaxed), 0);
     }
 
     #[cfg_attr(miri, ignore)]

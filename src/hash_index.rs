@@ -9,7 +9,7 @@ use std::panic::UnwindSafe;
 use std::pin::pin;
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 use sdd::{AtomicShared, Guard, Shared, Tag};
 
@@ -51,6 +51,7 @@ where
     bucket_array: AtomicShared<BucketArray<K, V, (), INDEX>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
+    garbage_chain: AtomicShared<BucketArray<K, V, (), INDEX>>,
 }
 
 /// [`Entry`] represents a single entry in a [`HashIndex`].
@@ -134,6 +135,7 @@ where
             bucket_array: AtomicShared::null(),
             minimum_capacity: AtomicUsize::new(0),
             build_hasher,
+            garbage_chain: AtomicShared::null(),
         }
     }
 
@@ -185,6 +187,7 @@ where
             bucket_array: array,
             minimum_capacity,
             build_hasher,
+            garbage_chain: AtomicShared::null(),
         }
     }
 }
@@ -1292,6 +1295,15 @@ where
                 // remain outside the lifetime of the `HashIndex`.
                 a.drop_in_place()
             });
+        let mut garbage_head = self.garbage_chain.swap((None, Tag::None), Acquire).0;
+        while let Some(garbage_bucket_array) = garbage_head {
+            garbage_head = garbage_bucket_array
+                .old_array_ptr()
+                .swap((None, Tag::None), Acquire)
+                .0;
+            let dropped = unsafe { garbage_bucket_array.drop_in_place() };
+            debug_assert!(dropped);
+        }
     }
 }
 
@@ -1322,6 +1334,56 @@ where
     #[inline]
     fn hasher(&self) -> &H {
         &self.build_hasher
+    }
+    #[inline]
+    fn pass_to_collector(
+        &self,
+        mut bucket_array: Shared<BucketArray<K, V, (), INDEX>>,
+        guard: &Guard,
+    ) {
+        let mut garbage_head_ptr = self.garbage_chain.load(Acquire, guard);
+        loop {
+            bucket_array
+                .old_array_ptr()
+                .swap((garbage_head_ptr.get_shared(), Tag::None), Relaxed);
+            match self.garbage_chain.compare_exchange(
+                garbage_head_ptr,
+                (Some(bucket_array), Tag::None),
+                AcqRel,
+                Acquire,
+                guard,
+            ) {
+                Err((Some(passed), actual)) => {
+                    bucket_array = passed;
+                    garbage_head_ptr = actual;
+                }
+                _ => break,
+            }
+        }
+    }
+    #[inline]
+    fn collect_garbage(&self, guard: &Guard) {
+        let garbage_head_ptr = self.garbage_chain.load(Acquire, guard);
+        if let Some(garbage_head) = garbage_head_ptr.as_ref() {
+            if garbage_head.can_drop(guard) {
+                if let Ok((mut garbage_head, _)) = self.garbage_chain.compare_exchange(
+                    garbage_head_ptr,
+                    (None, Tag::None),
+                    Acquire,
+                    Relaxed,
+                    guard,
+                ) {
+                    while let Some(garbage_bucket_array) = garbage_head {
+                        garbage_head = garbage_bucket_array
+                            .old_array_ptr()
+                            .swap((None, Tag::None), Acquire)
+                            .0;
+                        let dropped = unsafe { garbage_bucket_array.drop_in_place() };
+                        debug_assert!(dropped);
+                    }
+                }
+            }
+        }
     }
     #[inline]
     fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), INDEX>> {

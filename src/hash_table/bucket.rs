@@ -192,7 +192,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 .occupied_bitmap
                 .store(occupied_bitmap, Relaxed);
             let removed = Self::read_data_block(&link.data_block, entry_ptr.current_index);
-            if occupied_bitmap == 0 {
+            if occupied_bitmap == 0 && TYPE != INDEX {
                 entry_ptr.unlink(self, link, guard);
             }
             removed
@@ -233,9 +233,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             link.metadata
                 .removed_bitmap_or_lru_tail
                 .store(removed_bitmap, Release);
-            if link.metadata.occupied_bitmap.load(Relaxed) == removed_bitmap {
-                entry_ptr.unlink(self, link, guard);
-            }
         } else {
             let mut removed_bitmap = self.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
             debug_assert_eq!(removed_bitmap & (1_u32 << entry_ptr.current_index), 0);
@@ -244,8 +241,8 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             self.metadata
                 .removed_bitmap_or_lru_tail
                 .store(removed_bitmap, Release);
-            self.update_target_epoch(guard);
         }
+        self.update_epoch(guard);
     }
 
     /// Evicts the least recently used entry if the [`Bucket`] is full.
@@ -368,7 +365,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             link.metadata
                 .occupied_bitmap
                 .store(occupied_bitmap, Relaxed);
-            if occupied_bitmap == 0 {
+            if occupied_bitmap == 0 && TYPE != INDEX {
                 from_entry_ptr.unlink(from_writer, link, guard);
             }
         } else {
@@ -390,8 +387,8 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             let mut next = self.metadata.link.swap((None, Tag::None), Acquire);
             while let Some(current) = next.0 {
                 next = current.metadata.link.swap((None, Tag::None), Acquire);
-                let released = unsafe { current.drop_in_place() };
-                debug_assert!(TYPE == INDEX || released);
+                let dropped = unsafe { current.drop_in_place() };
+                debug_assert!(dropped);
             }
         }
         if needs_drop::<(K, V)>() {
@@ -416,35 +413,74 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     ) {
         debug_assert_eq!(TYPE, INDEX);
 
-        let mut removed_bitmap = self.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
+        let current_epoch = u8::from(guard.epoch());
+        let prev_epoch = *Self::read_cell(&self.epoch);
+        if current_epoch > prev_epoch + 2 || current_epoch < prev_epoch {
+            Self::cleanup_removed_entries(&self.metadata, unsafe { data_block.as_ref() });
+            let mut link_ptr = self.metadata.link.load(Acquire, guard);
+            while let Some(link) = link_ptr.as_ref() {
+                Self::cleanup_removed_entries(&link.metadata, &link.data_block);
+                let next_link_ptr = link.metadata.link.load(Acquire, guard);
+                if next_link_ptr.is_null() {
+                    self.cleanup_empty_link(link_ptr.as_ptr());
+                }
+                link_ptr = next_link_ptr;
+            }
+        }
+    }
+
+    /// Clears removed entries if they are completely unreachable, allowing others to reuse
+    /// the memory.
+    fn cleanup_removed_entries<const LEN: usize>(
+        metadata: &Metadata<K, V, LEN>,
+        data_block: &DataBlock<K, V, LEN>,
+    ) {
+        debug_assert_eq!(TYPE, INDEX);
+
+        let mut removed_bitmap = metadata.removed_bitmap_or_lru_tail.load(Relaxed);
         if removed_bitmap == 0 {
             return;
         }
 
-        let current_epoch = u8::from(guard.epoch());
-        let target_epoch = *Self::read_cell(&self.epoch);
-        if current_epoch == target_epoch {
-            let mut occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
-            let mut index = removed_bitmap.trailing_zeros();
-            while index != 32 {
-                let bit = 1_u32 << index;
-                debug_assert_eq!(occupied_bitmap & bit, bit);
-                occupied_bitmap -= bit;
-                removed_bitmap -= bit;
-                Self::drop_entry(unsafe { data_block.as_ref() }, index as usize);
-                index = removed_bitmap.trailing_zeros();
-            }
+        let mut occupied_bitmap = metadata.occupied_bitmap.load(Relaxed);
+        let mut index = removed_bitmap.trailing_zeros();
+        while index != 32 {
+            let bit = 1_u32 << index;
+            debug_assert_eq!(occupied_bitmap & bit, bit);
+            occupied_bitmap -= bit;
+            removed_bitmap -= bit;
+            Self::drop_entry(data_block, index as usize);
+            index = removed_bitmap.trailing_zeros();
+        }
 
-            // The store ordering is important.
-            //
-            // Peek: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
-            // Drop: `occupied_bitmap` -> `release` -> `removed_bitmap`.
-            self.metadata
-                .occupied_bitmap
-                .store(occupied_bitmap, Release);
-            self.metadata
-                .removed_bitmap_or_lru_tail
-                .store(removed_bitmap, Release);
+        // The store ordering is important.
+        //
+        // Peek: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
+        // Drop: `occupied_bitmap` -> `release` -> `removed_bitmap`.
+        metadata.occupied_bitmap.store(occupied_bitmap, Release);
+        metadata
+            .removed_bitmap_or_lru_tail
+            .store(removed_bitmap, Release);
+    }
+
+    /// Cleans up empty linked buckets.
+    fn cleanup_empty_link(&self, mut link_ptr: *const LinkedBucket<K, V>) {
+        debug_assert_eq!(TYPE, INDEX);
+
+        while let Some(link) = unsafe { link_ptr.as_ref() } {
+            if link.metadata.occupied_bitmap.load(Relaxed) != 0 {
+                break;
+            }
+            link_ptr = link.prev_link.load(Relaxed);
+            if let Some(prev) = unsafe { link_ptr.as_ref() } {
+                let unlinked = prev.metadata.link.swap((None, Tag::None), Relaxed).0;
+                let released = unlinked.is_some_and(Shared::release);
+                debug_assert!(released);
+            } else {
+                let unlinked = self.metadata.link.swap((None, Tag::None), Relaxed).0;
+                let released = unlinked.is_some_and(Shared::release);
+                debug_assert!(released);
+            }
         }
     }
 
@@ -553,13 +589,11 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Updates the target epoch after removing an entry.
     #[inline]
-    fn update_target_epoch(&self, guard: &Guard) {
+    fn update_epoch(&self, guard: &Guard) {
         debug_assert_eq!(TYPE, INDEX);
-        debug_assert_ne!(self.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
 
-        let target_epoch = guard.epoch().next_generation();
         self.write_cell(&self.epoch, |e| {
-            *e = u8::from(target_epoch);
+            *e = u8::from(guard.epoch());
         });
     }
 
@@ -828,17 +862,12 @@ impl<K, V, L: LruList, const TYPE: char> Writer<K, V, L, TYPE> {
                     == self.metadata.occupied_bitmap.load(Relaxed)
         );
 
-        if !self.metadata.link.is_null(Relaxed) {
+        if TYPE != INDEX && !self.metadata.link.is_null(Relaxed) {
             let mut link = self.metadata.link.swap((None, Tag::None), Acquire).0;
             while let Some(current) = link {
                 link = current.metadata.link.swap((None, Tag::None), Acquire).0;
-                let released = if TYPE == INDEX {
-                    // The `LinkedBucket` cannot be dropped immediately, as it may still be in use.
-                    current.release()
-                } else {
-                    unsafe { current.drop_in_place() }
-                };
-                debug_assert!(TYPE == INDEX || released);
+                let dropped = unsafe { current.drop_in_place() };
+                debug_assert!(dropped);
             }
         }
 
@@ -1037,39 +1066,35 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         link: &LinkedBucket<K, V>,
         guard: &'g Guard,
     ) {
+        debug_assert_ne!(TYPE, INDEX);
+
         let prev_link_ptr = link.prev_link.load(Relaxed);
-        let next_link = if TYPE == INDEX {
-            link.metadata.link.get_shared(Relaxed, guard)
+        let next = if TYPE == INDEX {
+            None
         } else {
             link.metadata.link.swap((None, Tag::None), Relaxed).0
         };
-        if let Some(next_link) = next_link.as_ref() {
-            next_link.prev_link.store(prev_link_ptr, Relaxed);
+        if let Some(next) = next.as_ref() {
+            next.prev_link.store(prev_link_ptr, Relaxed);
         }
 
-        self.current_link_ptr = next_link
+        self.current_link_ptr = next
             .as_ref()
             .map_or_else(Ptr::null, |n| n.get_guarded_ptr(guard));
-        let old_link = if let Some(prev_link) = unsafe { prev_link_ptr.as_ref() } {
-            prev_link
-                .metadata
-                .link
-                .swap((next_link, Tag::None), Release)
-                .0
+        let unlinked = if let Some(prev) = unsafe { prev_link_ptr.as_ref() } {
+            prev.metadata.link.swap((next, Tag::None), Release).0
         } else {
-            bucket.metadata.link.swap((next_link, Tag::None), Release).0
+            bucket.metadata.link.swap((next, Tag::None), Release).0
         };
-        let released = old_link.is_none_or(|l| {
+        if let Some(link) = unlinked {
             if TYPE == INDEX {
-                l.release()
+                let released = link.release();
+                debug_assert!(released);
             } else {
-                // The `LinkedBucket` should be dropped immediately.
-                unsafe { l.drop_in_place() }
+                let dropped = unsafe { link.drop_in_place() };
+                debug_assert!(dropped);
             }
-        });
-
-        // `old_link` still holds a strong reference to the next `LinkedBucket` if `TYPE == INDEX`.
-        debug_assert!(TYPE == INDEX || released);
+        }
 
         if self.current_link_ptr.is_null() {
             // Fuse the `EntryPtr`.

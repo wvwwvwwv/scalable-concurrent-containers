@@ -39,6 +39,16 @@ where
     /// Returns a reference to the [`BucketArray`] pointer.
     fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>>;
 
+    /// Passes the bucket array to a garbage collector.
+    #[inline]
+    fn pass_to_collector(&self, bucket_array: Shared<BucketArray<K, V, L, TYPE>>, _guard: &Guard) {
+        drop(bucket_array);
+    }
+
+    /// Collects garbage bucket arrays.
+    #[inline]
+    fn collect_garbage(&self, _guard: &Guard) {}
+
     /// Calculates the bucket index from the supplied key.
     #[inline]
     fn calculate_bucket_index<Q>(&self, key: &Q) -> usize
@@ -337,6 +347,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        self.collect_garbage(guard); // TODO.
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -1137,21 +1148,11 @@ where
 
     /// Ends incremental rehashing.
     #[inline]
-    fn end_incremental_rehash(
-        current_array: &BucketArray<K, V, L, TYPE>,
-        old_array: &BucketArray<K, V, L, TYPE>,
-        prev: usize,
-        success: bool,
-    ) {
+    fn end_incremental_rehash(old_array: &BucketArray<K, V, L, TYPE>, prev: usize, success: bool) {
         let rehashing_metadata = old_array.rehashing_metadata();
         if success {
             // Keep the index as it is.
-            let old_array_len = old_array.len();
-            let current = rehashing_metadata.fetch_sub(1, Release) - 1;
-            if (current & (BUCKET_LEN - 1) == 0) && current >= old_array_len {
-                // The last one trying to relocate old entries gets rid of the old array.
-                current_array.drop_old_array();
-            }
+            rehashing_metadata.fetch_sub(1, Release);
         } else {
             // On failure, `rehashing` reverts to its previous state.
             let mut current = rehashing_metadata.load(Relaxed);
@@ -1181,42 +1182,37 @@ where
         sendable_guard: &'g SendableGuard,
     ) {
         if let Some(old_array) = sendable_guard.load(current_array.old_array_ptr(), Acquire) {
-            let Some(current) = Self::start_incremental_rehash(old_array) else {
-                return;
-            };
+            if let Some(current) = Self::start_incremental_rehash(old_array) {
+                let mut rehashing_guard =
+                    ExitGuard::new((current, old_array), |(prev, old_array)| {
+                        Self::end_incremental_rehash(old_array, prev, prev == usize::MAX);
+                    });
 
-            let mut rehashing_guard = ExitGuard::new(
-                (current, current_array, old_array),
-                |(prev, current_array, old_array)| {
-                    Self::end_incremental_rehash(
-                        current_array,
-                        old_array,
-                        prev,
-                        prev == usize::MAX,
-                    );
-                },
-            );
-
-            for bucket_index in
-                rehashing_guard.0..(rehashing_guard.0 + BUCKET_LEN).min(old_array.len())
-            {
-                let old_bucket = rehashing_guard.2.bucket(bucket_index);
-                let writer = Writer::lock_async(old_bucket, sendable_guard).await;
-                if let Some(writer) = writer {
-                    self.relocate_bucket_async(
-                        rehashing_guard.1,
-                        rehashing_guard.2,
-                        bucket_index,
-                        writer,
-                        sendable_guard,
-                    )
-                    .await;
+                for bucket_index in
+                    rehashing_guard.0..(rehashing_guard.0 + BUCKET_LEN).min(old_array.len())
+                {
+                    let old_bucket = rehashing_guard.1.bucket(bucket_index);
+                    let writer = Writer::lock_async(old_bucket, sendable_guard).await;
+                    if let Some(writer) = writer {
+                        self.relocate_bucket_async(
+                            current_array,
+                            rehashing_guard.1,
+                            bucket_index,
+                            writer,
+                            sendable_guard,
+                        )
+                        .await;
+                    }
+                    debug_assert!(current_array.has_old_array());
                 }
-                debug_assert!(rehashing_guard.1.has_old_array());
-            }
 
-            // `usize::MAX` indicates that the rehashing is complete.
-            rehashing_guard.0 = usize::MAX;
+                // `usize::MAX` indicates that the rehashing is complete.
+                rehashing_guard.0 = usize::MAX;
+            }
+        }
+
+        if let Some(bucket_array) = current_array.try_drop_old_array(sendable_guard.guard()) {
+            self.pass_to_collector(bucket_array, sendable_guard.guard());
         }
     }
 
@@ -1229,40 +1225,45 @@ where
         guard: &'g Guard,
     ) -> bool {
         if let Some(old_array) = current_array.old_array(guard).as_ref() {
-            let Some(current) = Self::start_incremental_rehash(old_array) else {
-                return !current_array.has_old_array();
-            };
+            if let Some(current) = Self::start_incremental_rehash(old_array) {
+                let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
+                    Self::end_incremental_rehash(old_array, prev, success);
+                });
 
-            let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
-                Self::end_incremental_rehash(current_array, old_array, prev, success);
-            });
-
-            for bucket_index in current..(current + BUCKET_LEN).min(old_array.len()) {
-                let old_bucket = old_array.bucket(bucket_index);
-                let writer = if TRY_LOCK {
-                    let Ok(writer) = Writer::try_lock(old_bucket) else {
-                        return false;
+                for bucket_index in current..(current + BUCKET_LEN).min(old_array.len()) {
+                    let old_bucket = old_array.bucket(bucket_index);
+                    let writer = if TRY_LOCK {
+                        let Ok(writer) = Writer::try_lock(old_bucket) else {
+                            return false;
+                        };
+                        writer
+                    } else {
+                        Writer::lock_sync(old_bucket)
                     };
-                    writer
-                } else {
-                    Writer::lock_sync(old_bucket)
-                };
-                if let Some(writer) = writer {
-                    if !self.relocate_bucket_sync::<TRY_LOCK>(
-                        current_array,
-                        old_array,
-                        bucket_index,
-                        writer,
-                        guard,
-                    ) {
-                        return false;
+                    if let Some(writer) = writer {
+                        if !self.relocate_bucket_sync::<TRY_LOCK>(
+                            current_array,
+                            old_array,
+                            bucket_index,
+                            writer,
+                            guard,
+                        ) {
+                            return false;
+                        }
                     }
                 }
-            }
 
-            rehashing_guard.1 = true;
+                rehashing_guard.1 = true;
+                drop(rehashing_guard);
+            }
         }
-        !current_array.has_old_array()
+
+        if let Some(bucket_array) = current_array.try_drop_old_array(guard) {
+            self.pass_to_collector(bucket_array, guard);
+            true
+        } else {
+            !current_array.has_old_array()
+        }
     }
 
     /// Tries to enlarge [`HashTable`] if the estimated load factor is greater than `7/8`.
@@ -1441,7 +1442,9 @@ where
             }) {
                 // All the buckets are empty and locked.
                 writer_guard.1 = true;
-                self.bucket_array().swap((None, Tag::None), Release);
+                if let Some(bucket_array) = self.bucket_array().swap((None, Tag::None), Release).0 {
+                    self.pass_to_collector(bucket_array, guard);
+                }
                 return;
             }
         }
