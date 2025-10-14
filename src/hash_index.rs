@@ -90,8 +90,7 @@ where
 /// The [`HashIndex`] does not shrink the capacity below the reserved capacity.
 pub struct Reserve<'h, K, V, H = RandomState>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
@@ -192,8 +191,7 @@ where
 
 impl<K, V, H> HashIndex<K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Temporarily increases the minimum capacity of the [`HashIndex`].
@@ -1186,8 +1184,8 @@ where
 
 impl<K, V, H> Clone for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: Clone + Eq + Hash,
+    V: Clone,
     H: BuildHasher + Clone,
 {
     #[inline]
@@ -1202,8 +1200,8 @@ where
 
 impl<K, V, H> Debug for HashIndex<K, V, H>
 where
-    K: 'static + Debug + Eq + Hash,
-    V: 'static + Debug,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1215,8 +1213,7 @@ where
 
 impl<K, V> HashIndex<K, V, RandomState>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
 {
     /// Creates an empty default [`HashIndex`].
     ///
@@ -1259,8 +1256,6 @@ where
 
 impl<K, V, H> Default for HashIndex<K, V, H>
 where
-    K: 'static,
-    V: 'static,
     H: BuildHasher + Default,
 {
     /// Creates an empty default [`HashIndex`].
@@ -1302,8 +1297,7 @@ where
 
 impl<K, V, H> FromIterator<(K, V)> for HashIndex<K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher + Default,
 {
     #[inline]
@@ -1322,8 +1316,7 @@ where
 
 impl<K, V, H> HashTable<K, V, H, (), INDEX> for HashIndex<K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -1346,8 +1339,8 @@ where
 
 impl<K, V, H> PartialEq for HashIndex<K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static + PartialEq,
+    K: Eq + Hash,
+    V: PartialEq,
     H: BuildHasher,
 {
     #[inline]
@@ -1367,8 +1360,7 @@ where
 
 impl<'h, K, V, H> Entry<'h, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Ensures a value is in the entry by inserting the supplied instance if empty.
@@ -1498,8 +1490,8 @@ where
 
 impl<'h, K, V, H> Entry<'h, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static + Default,
+    K: Eq + Hash,
+    V: Default,
     H: BuildHasher,
 {
     /// Ensures a value is in the entry by inserting the default value if empty.
@@ -1524,8 +1516,8 @@ where
 
 impl<K, V, H> Debug for Entry<'_, K, V, H>
 where
-    K: 'static + Debug + Eq + Hash,
-    V: 'static + Debug,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1539,8 +1531,7 @@ where
 
 impl<'h, K, V, H> OccupiedEntry<'h, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Gets a reference to the key in the entry.
@@ -1818,8 +1809,7 @@ where
 
 impl<K, V, H> OccupiedEntry<'_, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static,
+    K: Clone + Eq + Hash,
     H: BuildHasher,
 {
     /// Updates the entry by inserting a new entry and marking the existing entry removed.
@@ -1859,8 +1849,8 @@ where
 
 impl<K, V, H> Debug for OccupiedEntry<'_, K, V, H>
 where
-    K: 'static + Debug + Eq + Hash,
-    V: 'static + Debug,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1874,8 +1864,8 @@ where
 
 impl<K, V, H> Deref for OccupiedEntry<'_, K, V, H>
 where
-    K: 'static + Debug + Eq + Hash,
-    V: 'static + Debug,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     type Target = V;
@@ -1888,8 +1878,7 @@ where
 
 impl<'h, K, V, H> VacantEntry<'h, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Gets a reference to the key.
@@ -1959,8 +1948,8 @@ where
 
 impl<K, V, H> Debug for VacantEntry<'_, K, V, H>
 where
-    K: 'static + Debug + Eq + Hash,
-    V: 'static + Debug,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1971,8 +1960,7 @@ where
 
 impl<K, V, H> Reserve<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Returns the number of reserved slots.
@@ -1985,8 +1973,7 @@ where
 
 impl<K, V, H> AsRef<HashIndex<K, V, H>> for Reserve<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -1997,8 +1984,7 @@ where
 
 impl<K, V, H> Debug for Reserve<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -2009,8 +1995,7 @@ where
 
 impl<K, V, H> Deref for Reserve<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     type Target = HashIndex<K, V, H>;
@@ -2023,8 +2008,7 @@ where
 
 impl<K, V, H> Drop for Reserve<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -2044,8 +2028,7 @@ where
 
 impl<K, V, H> Debug for Iter<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -2059,8 +2042,7 @@ where
 
 impl<'h, K, V, H> Iterator for Iter<'h, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     type Item = (&'h K, &'h V);
@@ -2146,16 +2128,15 @@ where
 
 impl<K, V, H> FusedIterator for Iter<'_, K, V, H>
 where
-    K: 'static + Eq + Hash,
-    V: 'static,
+    K: Eq + Hash,
     H: BuildHasher,
 {
 }
 
 impl<K, V, H> UnwindSafe for Iter<'_, K, V, H>
 where
-    K: 'static + Eq + Hash + UnwindSafe,
-    V: 'static + UnwindSafe,
+    K: Eq + Hash + UnwindSafe,
+    V: UnwindSafe,
     H: BuildHasher + UnwindSafe,
 {
 }
