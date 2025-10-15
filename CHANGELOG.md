@@ -3,6 +3,11 @@
 
 ## Version 3
 
+3.3.2
+
+* Remove the `'static` bound from `HashIndex`: [#200](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/200).
+* Ensure that `HashIndex` entries are deallocated when the `HashIndex` is dropped: [#198](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/198).
+
 3.3.1
 
 * More conservative grow/shrink policies in `Hash*` containers to avoid wrong load factor estimation.

@@ -8,10 +8,10 @@ use std::ops::{Deref, RangeInclusive};
 use std::panic::UnwindSafe;
 use std::pin::pin;
 use std::ptr;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
+use std::sync::atomic::{AtomicU8, AtomicUsize};
 
-use sdd::{AtomicShared, Guard, Shared, Tag};
+use sdd::{AtomicShared, Epoch, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
 use super::hash_table::HashTable;
@@ -49,8 +49,10 @@ where
     H: BuildHasher,
 {
     bucket_array: AtomicShared<BucketArray<K, V, (), INDEX>>,
-    minimum_capacity: AtomicUsize,
     build_hasher: H,
+    garbage_chain: AtomicShared<BucketArray<K, V, (), INDEX>>,
+    garbage_epoch: AtomicU8,
+    minimum_capacity: AtomicUsize,
 }
 
 /// [`Entry`] represents a single entry in a [`HashIndex`].
@@ -132,8 +134,10 @@ where
     pub const fn with_hasher(build_hasher: H) -> Self {
         Self {
             bucket_array: AtomicShared::null(),
-            minimum_capacity: AtomicUsize::new(0),
             build_hasher,
+            garbage_chain: AtomicShared::null(),
+            garbage_epoch: AtomicU8::new(u8::MAX),
+            minimum_capacity: AtomicUsize::new(0),
         }
     }
 
@@ -143,8 +147,10 @@ where
     pub fn with_hasher(build_hasher: H) -> Self {
         Self {
             bucket_array: AtomicShared::null(),
-            minimum_capacity: AtomicUsize::new(0),
             build_hasher,
+            garbage_chain: AtomicShared::null(),
+            garbage_epoch: AtomicU8::new(u8::MAX),
+            minimum_capacity: AtomicUsize::new(0),
         }
     }
 
@@ -183,8 +189,10 @@ where
         };
         Self {
             bucket_array: array,
-            minimum_capacity,
             build_hasher,
+            garbage_chain: AtomicShared::null(),
+            garbage_epoch: AtomicU8::new(u8::MAX),
+            minimum_capacity,
         }
     }
 }
@@ -1180,6 +1188,29 @@ where
             guard,
         }
     }
+
+    /// Collects garbage bucket arrays.
+    fn collect(&self, head_ptr: Ptr<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
+        let garbage_epoch = self.garbage_epoch.load(Acquire);
+        if Epoch::try_from(garbage_epoch).is_ok_and(|e| !e.in_same_generation(guard.epoch())) {
+            if let Ok((mut garbage_head, _)) = self.garbage_chain.compare_exchange(
+                head_ptr,
+                (None, Tag::None),
+                Acquire,
+                Relaxed,
+                guard,
+            ) {
+                while let Some(garbage_bucket_array) = garbage_head {
+                    garbage_head = garbage_bucket_array
+                        .old_array_ptr()
+                        .swap((None, Tag::None), Acquire)
+                        .0;
+                    let dropped = unsafe { garbage_bucket_array.drop_in_place() };
+                    debug_assert!(dropped);
+                }
+            }
+        }
+    }
 }
 
 impl<K, V, H> Clone for HashIndex<K, V, H>
@@ -1292,6 +1323,15 @@ where
                 // remain outside the lifetime of the `HashIndex`.
                 a.drop_in_place()
             });
+        let mut garbage_head = self.garbage_chain.swap((None, Tag::None), Acquire).0;
+        while let Some(garbage_bucket_array) = garbage_head {
+            garbage_head = garbage_bucket_array
+                .old_array_ptr()
+                .swap((None, Tag::None), Acquire)
+                .0;
+            let dropped = unsafe { garbage_bucket_array.drop_in_place() };
+            debug_assert!(dropped);
+        }
     }
 }
 
@@ -1323,14 +1363,53 @@ where
     fn hasher(&self) -> &H {
         &self.build_hasher
     }
+
+    #[inline]
+    fn pass_to_collector(
+        &self,
+        mut bucket_array: Shared<BucketArray<K, V, (), INDEX>>,
+        guard: &Guard,
+    ) {
+        self.garbage_epoch.store(u8::from(guard.epoch()), Release);
+        let mut garbage_head_ptr = self.garbage_chain.load(Acquire, guard);
+        loop {
+            bucket_array
+                .old_array_ptr()
+                .swap((garbage_head_ptr.get_shared(), Tag::None), Release);
+            match self.garbage_chain.compare_exchange(
+                garbage_head_ptr,
+                (Some(bucket_array), Tag::None),
+                AcqRel,
+                Acquire,
+                guard,
+            ) {
+                Err((Some(passed), actual)) => {
+                    bucket_array = passed;
+                    garbage_head_ptr = actual;
+                }
+                _ => break,
+            }
+        }
+    }
+
+    #[inline]
+    fn collect_garbage(&self, guard: &Guard) {
+        let head_ptr = self.garbage_chain.load(Acquire, guard);
+        if !head_ptr.is_null() {
+            self.collect(head_ptr, guard);
+        }
+    }
+
     #[inline]
     fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), INDEX>> {
         &self.bucket_array
     }
+
     #[inline]
     fn minimum_capacity(&self) -> &AtomicUsize {
         &self.minimum_capacity
     }
+
     #[inline]
     fn maximum_capacity(&self) -> usize {
         1_usize << (usize::BITS - 1)

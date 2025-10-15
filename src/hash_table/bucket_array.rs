@@ -5,9 +5,9 @@ use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-use sdd::{AtomicShared, Guard, Ptr, Tag};
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
-use super::bucket::{BUCKET_LEN, Bucket, DataBlock, LruList};
+use super::bucket::{BUCKET_LEN, Bucket, DataBlock, INDEX, LruList};
 use crate::exit_guard::ExitGuard;
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
@@ -15,7 +15,7 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
     buckets: NonNull<Bucket<K, V, L, TYPE>>,
     data_blocks: NonNull<DataBlock<K, V, BUCKET_LEN>>,
     array_len: usize,
-    hash_offset: u32,
+    hash_offset: u16,
     sample_size_mask: u16,
     bucket_ptr_offset: u16,
     old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
@@ -88,7 +88,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 buckets,
                 data_blocks,
                 array_len,
-                hash_offset: u64::BITS - u32::from(log2_array_len),
+                hash_offset: u16::try_from(u64::BITS).unwrap_or(64) - u16::from(log2_array_len),
                 sample_size_mask: u16::from(log2_array_len).next_power_of_two() - 1,
                 bucket_ptr_offset: bucket_array_ptr_offset,
                 old_array,
@@ -182,16 +182,19 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 
     /// Drops the old array.
     #[inline]
-    pub(crate) fn drop_old_array(&self) {
-        debug_assert!(!self.old_array.is_null(Relaxed));
-        self.old_array.swap((None, Tag::None), Release).0.map(|a| {
-            // It is OK to pass the old array instance to the garbage collector, deferring destruction.
-            debug_assert_eq!(
-                a.num_cleared_buckets.load(Relaxed),
-                a.array_len.max(BUCKET_LEN)
-            );
-            a.release()
-        });
+    pub(crate) fn try_drop_old_array(&self, guard: &Guard) -> Option<Shared<Self>> {
+        if let Some(old_array) = self.old_array(guard).as_ref() {
+            let metadata = old_array.rehashing_metadata().load(Relaxed);
+            if (metadata & (BUCKET_LEN - 1) == 0) && metadata >= old_array.len() {
+                // It is OK to pass the old array instance to the garbage collector, deferring destruction.
+                debug_assert_eq!(
+                    old_array.num_cleared_buckets.load(Relaxed),
+                    old_array.array_len.max(BUCKET_LEN)
+                );
+                return self.old_array.swap((None, Tag::None), Release).0;
+            }
+        }
+        None
     }
 
     /// Calculates the layout of the memory block for an array of `T`.
@@ -233,7 +236,11 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
             }
         }
 
-        let num_cleared_buckets = self.num_cleared_buckets.load(Relaxed);
+        let num_cleared_buckets = if TYPE == INDEX {
+            0
+        } else {
+            self.num_cleared_buckets.load(Relaxed)
+        };
         if num_cleared_buckets < self.array_len {
             for index in num_cleared_buckets..self.array_len {
                 self.bucket(index).drop_entries(self.data_block(index));

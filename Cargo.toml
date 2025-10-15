@@ -2,7 +2,7 @@
 name = "scc"
 description = "A collection of high-performance containers and utilities providing both asynchronous and synchronous interfaces"
 documentation = "https://docs.rs/scc"
-version = "3.3.1"
+version = "3.3.2"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2024"
 rust-version = "1.85.0"
@@ -19,7 +19,7 @@ members = [".", "examples", "extended_tests"]
 equivalent = { version = "1.0", optional = true }
 loom = { version = "0.7", optional = true }
 saa = "5.0"
-sdd = "4.1"
+sdd = "4.2"
 serde = { version = "1.0", optional = true }
 
 [features]
