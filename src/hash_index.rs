@@ -1210,7 +1210,7 @@ where
                 }
             }
         } else {
-            guard.accelerate();
+            // TODO: guard.accelerate(); <- fix this in MIRI.
         }
     }
 }
