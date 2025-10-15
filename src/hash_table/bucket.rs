@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
 
 use saa::Lock;
-use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+use sdd::{AtomicShared, Epoch, Guard, Ptr, Shared, Tag};
 
 use crate::Equivalent;
 use crate::async_helper::SendableGuard;
@@ -23,7 +23,7 @@ pub struct Bucket<K, V, L: LruList, const TYPE: char> {
     /// The epoch value when the [`Bucket`] was last updated.
     ///
     /// The field is only used when `TYPE == OPTIMISTIC`.
-    epoch: UnsafeCell<u8>,
+    epoch: UnsafeCell<Epoch>,
     /// [`Bucket`] metadata.
     metadata: Metadata<K, V, BUCKET_LEN>,
     /// Reader-writer lock.
@@ -413,9 +413,9 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     ) {
         debug_assert_eq!(TYPE, INDEX);
 
-        let current_epoch = u8::from(guard.epoch());
+        let current_epoch = guard.epoch();
         let prev_epoch = *Self::read_cell(&self.epoch);
-        if current_epoch > prev_epoch + 2 || current_epoch < prev_epoch {
+        if !prev_epoch.in_same_generation(current_epoch) {
             Self::cleanup_removed_entries(&self.metadata, unsafe { data_block.as_ref() });
             let mut link_ptr = self.metadata.link.load(Acquire, guard);
             while let Some(link) = link_ptr.as_ref() {
@@ -593,7 +593,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         debug_assert_eq!(TYPE, INDEX);
 
         self.write_cell(&self.epoch, |e| {
-            *e = u8::from(guard.epoch());
+            *e = guard.epoch();
         });
     }
 

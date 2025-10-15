@@ -5,7 +5,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-use sdd::{AtomicShared, Epoch, Guard, Ptr, Shared, Tag};
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::bucket::{BUCKET_LEN, Bucket, DataBlock, INDEX, LruList};
 use crate::exit_guard::ExitGuard;
@@ -18,7 +18,6 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
     hash_offset: u16,
     sample_size_mask: u16,
     bucket_ptr_offset: u16,
-    retired_epoch: Epoch,
     old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
     num_cleared_buckets: AtomicUsize,
 }
@@ -92,7 +91,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 hash_offset: u16::try_from(u64::BITS).unwrap_or(64) - u16::from(log2_array_len),
                 sample_size_mask: u16::from(log2_array_len).next_power_of_two() - 1,
                 bucket_ptr_offset: bucket_array_ptr_offset,
-                retired_epoch: Epoch::default(),
                 old_array,
                 num_cleared_buckets: AtomicUsize::new(0),
             }
@@ -193,23 +191,10 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                     old_array.num_cleared_buckets.load(Relaxed),
                     old_array.array_len.max(BUCKET_LEN)
                 );
-                if let Some(mut old_array) = self.old_array.swap((None, Tag::None), Release).0 {
-                    if let Some(old_array_mut) = unsafe { old_array.get_mut() } {
-                        old_array_mut.retired_epoch = guard.epoch();
-                    }
-                    return Some(old_array);
-                }
+                return self.old_array.swap((None, Tag::None), Release).0;
             }
         }
         None
-    }
-
-    /// Checks whether the bucket array can be immediately dropped.
-    #[inline]
-    pub(crate) fn can_drop(&self, guard: &Guard) -> bool {
-        let current_epoch = guard.epoch();
-        self.retired_epoch < current_epoch
-            || u8::from(self.retired_epoch) + 2 < u8::from(current_epoch)
     }
 
     /// Calculates the layout of the memory block for an array of `T`.

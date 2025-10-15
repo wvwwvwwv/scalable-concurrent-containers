@@ -255,6 +255,7 @@ where
     {
         debug_assert_eq!(TYPE, INDEX);
 
+        self.collect_garbage(guard);
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
@@ -305,6 +306,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        self.collect_garbage(sendable_guard.guard());
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
@@ -347,7 +349,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.collect_garbage(guard); // TODO.
+        self.collect_garbage(guard);
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -378,6 +380,7 @@ where
         hash: u64,
         sendable_guard: &SendableGuard,
     ) -> LockedBucket<K, V, L, TYPE> {
+        self.collect_garbage(sendable_guard.guard());
         loop {
             let current_array = self.get_or_create_bucket_array(sendable_guard.guard());
             let bucket_index = current_array.calculate_bucket_index(hash);
@@ -421,6 +424,7 @@ where
     /// If the container is empty, a new bucket array is allocated.
     #[inline]
     fn writer_sync(&self, hash: u64, guard: &Guard) -> LockedBucket<K, V, L, TYPE> {
+        self.collect_garbage(guard);
         loop {
             let current_array = self.get_or_create_bucket_array(guard);
             let bucket_index = current_array.calculate_bucket_index(hash);
@@ -458,6 +462,7 @@ where
         hash: u64,
         sendable_guard: &SendableGuard,
     ) -> Option<LockedBucket<K, V, L, TYPE>> {
+        self.collect_garbage(sendable_guard.guard());
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let bucket_index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
@@ -493,6 +498,7 @@ where
         hash: u64,
         guard: &Guard,
     ) -> Option<LockedBucket<K, V, L, TYPE>> {
+        self.collect_garbage(guard);
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let bucket_index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -522,6 +528,7 @@ where
     where
         F: FnMut(Reader<K, V, L, TYPE>, NonNull<DataBlock<K, V, BUCKET_LEN>>) -> bool,
     {
+        self.collect_garbage(sendable_guard.guard());
         let mut start_index = 0;
         let mut prev_len = 0;
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
@@ -581,6 +588,7 @@ where
     where
         F: FnMut(Reader<K, V, L, TYPE>, NonNull<DataBlock<K, V, BUCKET_LEN>>) -> bool,
     {
+        self.collect_garbage(guard);
         let mut start_index = 0;
         let mut prev_len = 0;
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
@@ -633,6 +641,7 @@ where
     ) where
         F: FnMut(LockedBucket<K, V, L, TYPE>) -> bool,
     {
+        self.collect_garbage(sendable_guard.guard());
         let mut prev_len = expected_array_len;
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             // In case the method is repeating the routine, iterate over entries from the middle of
@@ -704,6 +713,7 @@ where
     ) where
         F: FnMut(LockedBucket<K, V, L, TYPE>) -> bool,
     {
+        self.collect_garbage(guard);
         let mut prev_len = expected_array_len;
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             // In case the method is repeating the routine, iterate over entries from the middle of
@@ -759,6 +769,7 @@ where
     /// Tries to reserve a [`Bucket`] and returns a [`LockedBucket`].
     #[inline]
     fn try_reserve_bucket(&self, hash: u64, guard: &Guard) -> Option<LockedBucket<K, V, L, TYPE>> {
+        self.collect_garbage(guard);
         loop {
             let current_array = self.get_or_create_bucket_array(guard);
             let bucket_index = current_array.calculate_bucket_index(hash);
