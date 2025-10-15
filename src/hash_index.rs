@@ -1189,8 +1189,8 @@ where
         }
     }
 
-    /// Collects garbage bucket arrays.
-    fn collect(&self, head_ptr: Ptr<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
+    /// Processes the garbage bucket array chain.
+    fn process_garbage_chain(&self, head_ptr: Ptr<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
         let garbage_epoch = self.garbage_epoch.load(Acquire);
         if Epoch::try_from(garbage_epoch).is_ok_and(|e| !e.in_same_generation(guard.epoch())) {
             if let Ok((mut garbage_head, _)) = self.garbage_chain.compare_exchange(
@@ -1209,6 +1209,8 @@ where
                     debug_assert!(dropped);
                 }
             }
+        } else {
+            guard.accelerate();
         }
     }
 }
@@ -1365,11 +1367,7 @@ where
     }
 
     #[inline]
-    fn pass_to_collector(
-        &self,
-        mut bucket_array: Shared<BucketArray<K, V, (), INDEX>>,
-        guard: &Guard,
-    ) {
+    fn defer_reclaim(&self, mut bucket_array: Shared<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
         self.garbage_epoch.store(u8::from(guard.epoch()), Release);
         let mut garbage_head_ptr = self.garbage_chain.load(Acquire, guard);
         loop {
@@ -1393,10 +1391,10 @@ where
     }
 
     #[inline]
-    fn collect_garbage(&self, guard: &Guard) {
+    fn reclaim_memory(&self, guard: &Guard) {
         let head_ptr = self.garbage_chain.load(Acquire, guard);
         if !head_ptr.is_null() {
-            self.collect(head_ptr, guard);
+            self.process_garbage_chain(head_ptr, guard);
         }
     }
 

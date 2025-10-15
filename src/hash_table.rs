@@ -39,15 +39,15 @@ where
     /// Returns a reference to the [`BucketArray`] pointer.
     fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>>;
 
-    /// Passes the bucket array to a garbage collector.
+    /// Passes the bucket array to the garbage collector associated with the hash table type.
     #[inline]
-    fn pass_to_collector(&self, bucket_array: Shared<BucketArray<K, V, L, TYPE>>, _guard: &Guard) {
+    fn defer_reclaim(&self, bucket_array: Shared<BucketArray<K, V, L, TYPE>>, _guard: &Guard) {
         drop(bucket_array);
     }
 
-    /// Collects garbage bucket arrays.
+    /// Tries to reclaim memory by deallocating unreachable bucket arrays.
     #[inline]
-    fn collect_garbage(&self, _guard: &Guard) {}
+    fn reclaim_memory(&self, _guard: &Guard) {}
 
     /// Calculates the bucket index from the supplied key.
     #[inline]
@@ -255,7 +255,7 @@ where
     {
         debug_assert_eq!(TYPE, INDEX);
 
-        self.collect_garbage(guard);
+        self.reclaim_memory(guard);
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
@@ -306,7 +306,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.collect_garbage(sendable_guard.guard());
+        self.reclaim_memory(sendable_guard.guard());
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
@@ -349,7 +349,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.collect_garbage(guard);
+        self.reclaim_memory(guard);
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -380,7 +380,7 @@ where
         hash: u64,
         sendable_guard: &SendableGuard,
     ) -> LockedBucket<K, V, L, TYPE> {
-        self.collect_garbage(sendable_guard.guard());
+        self.reclaim_memory(sendable_guard.guard());
         loop {
             let current_array = self.get_or_create_bucket_array(sendable_guard.guard());
             let bucket_index = current_array.calculate_bucket_index(hash);
@@ -424,7 +424,7 @@ where
     /// If the container is empty, a new bucket array is allocated.
     #[inline]
     fn writer_sync(&self, hash: u64, guard: &Guard) -> LockedBucket<K, V, L, TYPE> {
-        self.collect_garbage(guard);
+        self.reclaim_memory(guard);
         loop {
             let current_array = self.get_or_create_bucket_array(guard);
             let bucket_index = current_array.calculate_bucket_index(hash);
@@ -462,7 +462,7 @@ where
         hash: u64,
         sendable_guard: &SendableGuard,
     ) -> Option<LockedBucket<K, V, L, TYPE>> {
-        self.collect_garbage(sendable_guard.guard());
+        self.reclaim_memory(sendable_guard.guard());
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let bucket_index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
@@ -498,7 +498,7 @@ where
         hash: u64,
         guard: &Guard,
     ) -> Option<LockedBucket<K, V, L, TYPE>> {
-        self.collect_garbage(guard);
+        self.reclaim_memory(guard);
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let bucket_index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -528,7 +528,7 @@ where
     where
         F: FnMut(Reader<K, V, L, TYPE>, NonNull<DataBlock<K, V, BUCKET_LEN>>) -> bool,
     {
-        self.collect_garbage(sendable_guard.guard());
+        self.reclaim_memory(sendable_guard.guard());
         let mut start_index = 0;
         let mut prev_len = 0;
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
@@ -588,7 +588,7 @@ where
     where
         F: FnMut(Reader<K, V, L, TYPE>, NonNull<DataBlock<K, V, BUCKET_LEN>>) -> bool,
     {
-        self.collect_garbage(guard);
+        self.reclaim_memory(guard);
         let mut start_index = 0;
         let mut prev_len = 0;
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
@@ -641,7 +641,7 @@ where
     ) where
         F: FnMut(LockedBucket<K, V, L, TYPE>) -> bool,
     {
-        self.collect_garbage(sendable_guard.guard());
+        self.reclaim_memory(sendable_guard.guard());
         let mut prev_len = expected_array_len;
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             // In case the method is repeating the routine, iterate over entries from the middle of
@@ -713,7 +713,7 @@ where
     ) where
         F: FnMut(LockedBucket<K, V, L, TYPE>) -> bool,
     {
-        self.collect_garbage(guard);
+        self.reclaim_memory(guard);
         let mut prev_len = expected_array_len;
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             // In case the method is repeating the routine, iterate over entries from the middle of
@@ -769,7 +769,7 @@ where
     /// Tries to reserve a [`Bucket`] and returns a [`LockedBucket`].
     #[inline]
     fn try_reserve_bucket(&self, hash: u64, guard: &Guard) -> Option<LockedBucket<K, V, L, TYPE>> {
-        self.collect_garbage(guard);
+        self.reclaim_memory(guard);
         loop {
             let current_array = self.get_or_create_bucket_array(guard);
             let bucket_index = current_array.calculate_bucket_index(hash);
@@ -1223,7 +1223,7 @@ where
         }
 
         if let Some(bucket_array) = current_array.try_drop_old_array(sendable_guard.guard()) {
-            self.pass_to_collector(bucket_array, sendable_guard.guard());
+            self.defer_reclaim(bucket_array, sendable_guard.guard());
         }
     }
 
@@ -1270,7 +1270,7 @@ where
         }
 
         if let Some(bucket_array) = current_array.try_drop_old_array(guard) {
-            self.pass_to_collector(bucket_array, guard);
+            self.defer_reclaim(bucket_array, guard);
             true
         } else {
             !current_array.has_old_array()
@@ -1454,7 +1454,7 @@ where
                 // All the buckets are empty and locked.
                 writer_guard.1 = true;
                 if let Some(bucket_array) = self.bucket_array().swap((None, Tag::None), Release).0 {
-                    self.pass_to_collector(bucket_array, guard);
+                    self.defer_reclaim(bucket_array, guard);
                 }
                 return;
             }
