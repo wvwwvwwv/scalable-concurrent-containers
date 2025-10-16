@@ -45,10 +45,6 @@ where
         drop(bucket_array);
     }
 
-    /// Tries to reclaim memory by deallocating unreachable bucket arrays.
-    #[inline]
-    fn reclaim_memory(&self, _guard: &Guard) {}
-
     /// Calculates the bucket index from the supplied key.
     #[inline]
     fn calculate_bucket_index<Q>(&self, key: &Q) -> usize
@@ -255,7 +251,6 @@ where
     {
         debug_assert_eq!(TYPE, INDEX);
 
-        self.reclaim_memory(guard);
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
@@ -306,7 +301,6 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.reclaim_memory(sendable_guard.guard());
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
@@ -349,7 +343,6 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.reclaim_memory(guard);
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -380,7 +373,6 @@ where
         hash: u64,
         sendable_guard: &SendableGuard,
     ) -> LockedBucket<K, V, L, TYPE> {
-        self.reclaim_memory(sendable_guard.guard());
         loop {
             let current_array = self.get_or_create_bucket_array(sendable_guard.guard());
             let bucket_index = current_array.calculate_bucket_index(hash);
@@ -424,7 +416,6 @@ where
     /// If the container is empty, a new bucket array is allocated.
     #[inline]
     fn writer_sync(&self, hash: u64, guard: &Guard) -> LockedBucket<K, V, L, TYPE> {
-        self.reclaim_memory(guard);
         loop {
             let current_array = self.get_or_create_bucket_array(guard);
             let bucket_index = current_array.calculate_bucket_index(hash);
@@ -462,7 +453,6 @@ where
         hash: u64,
         sendable_guard: &SendableGuard,
     ) -> Option<LockedBucket<K, V, L, TYPE>> {
-        self.reclaim_memory(sendable_guard.guard());
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let bucket_index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
@@ -498,7 +488,6 @@ where
         hash: u64,
         guard: &Guard,
     ) -> Option<LockedBucket<K, V, L, TYPE>> {
-        self.reclaim_memory(guard);
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let bucket_index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -528,7 +517,6 @@ where
     where
         F: FnMut(Reader<K, V, L, TYPE>, NonNull<DataBlock<K, V, BUCKET_LEN>>) -> bool,
     {
-        self.reclaim_memory(sendable_guard.guard());
         let mut start_index = 0;
         let mut prev_len = 0;
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
@@ -588,7 +576,6 @@ where
     where
         F: FnMut(Reader<K, V, L, TYPE>, NonNull<DataBlock<K, V, BUCKET_LEN>>) -> bool,
     {
-        self.reclaim_memory(guard);
         let mut start_index = 0;
         let mut prev_len = 0;
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
@@ -641,7 +628,6 @@ where
     ) where
         F: FnMut(LockedBucket<K, V, L, TYPE>) -> bool,
     {
-        self.reclaim_memory(sendable_guard.guard());
         let mut prev_len = expected_array_len;
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             // In case the method is repeating the routine, iterate over entries from the middle of
@@ -713,7 +699,6 @@ where
     ) where
         F: FnMut(LockedBucket<K, V, L, TYPE>) -> bool,
     {
-        self.reclaim_memory(guard);
         let mut prev_len = expected_array_len;
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             // In case the method is repeating the routine, iterate over entries from the middle of
@@ -769,7 +754,6 @@ where
     /// Tries to reserve a [`Bucket`] and returns a [`LockedBucket`].
     #[inline]
     fn try_reserve_bucket(&self, hash: u64, guard: &Guard) -> Option<LockedBucket<K, V, L, TYPE>> {
-        self.reclaim_memory(guard);
         loop {
             let current_array = self.get_or_create_bucket_array(guard);
             let bucket_index = current_array.calculate_bucket_index(hash);
@@ -831,7 +815,7 @@ where
             return false;
         }
 
-        if let Some(old_array) = sendable_guard.load(current_array.old_array_ptr(), Acquire) {
+        if let Some(old_array) = sendable_guard.load(current_array.bucket_link(), Acquire) {
             let range = Self::from_index_to_range(current_array.len(), old_array.len(), index);
             for old_index in range.0..range.1 {
                 let bucket = old_array.bucket(old_index);
@@ -1159,11 +1143,16 @@ where
 
     /// Ends incremental rehashing.
     #[inline]
-    fn end_incremental_rehash(old_array: &BucketArray<K, V, L, TYPE>, prev: usize, success: bool) {
+    fn end_incremental_rehash(
+        old_array: &BucketArray<K, V, L, TYPE>,
+        prev: usize,
+        success: bool,
+    ) -> bool {
         let rehashing_metadata = old_array.rehashing_metadata();
         if success {
             // Keep the index as it is.
-            rehashing_metadata.fetch_sub(1, Release);
+            let metadata = rehashing_metadata.fetch_sub(1, Release) - 1;
+            (metadata & (BUCKET_LEN - 1) == 0) && metadata >= old_array.len()
         } else {
             // On failure, `rehashing` reverts to its previous state.
             let mut current = rehashing_metadata.load(Relaxed);
@@ -1179,6 +1168,7 @@ where
                     Err(actual) => current = actual,
                 }
             }
+            false
         }
     }
 
@@ -1192,22 +1182,24 @@ where
         current_array: &'g BucketArray<K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
     ) {
-        if let Some(old_array) = sendable_guard.load(current_array.old_array_ptr(), Acquire) {
+        if let Some(old_array) = sendable_guard.load(current_array.bucket_link(), Acquire) {
             if let Some(current) = Self::start_incremental_rehash(old_array) {
                 let mut rehashing_guard =
-                    ExitGuard::new((current, old_array), |(prev, old_array)| {
-                        Self::end_incremental_rehash(old_array, prev, prev == usize::MAX);
+                    ExitGuard::new((old_array, current), |(old_array, prev)| {
+                        if prev != usize::MAX {
+                            Self::end_incremental_rehash(old_array, prev, false);
+                        }
                     });
 
                 for bucket_index in
-                    rehashing_guard.0..(rehashing_guard.0 + BUCKET_LEN).min(old_array.len())
+                    rehashing_guard.1..(rehashing_guard.1 + BUCKET_LEN).min(old_array.len())
                 {
-                    let old_bucket = rehashing_guard.1.bucket(bucket_index);
+                    let old_bucket = rehashing_guard.0.bucket(bucket_index);
                     let writer = Writer::lock_async(old_bucket, sendable_guard).await;
                     if let Some(writer) = writer {
                         self.relocate_bucket_async(
                             current_array,
-                            rehashing_guard.1,
+                            rehashing_guard.0,
                             bucket_index,
                             writer,
                             sendable_guard,
@@ -1217,13 +1209,18 @@ where
                     debug_assert!(current_array.has_old_array());
                 }
 
+                if Self::end_incremental_rehash(rehashing_guard.0, rehashing_guard.1, true) {
+                    if let Some(bucket_array) = current_array
+                        .bucket_link()
+                        .swap((None, Tag::None), Acquire)
+                        .0
+                    {
+                        self.defer_reclaim(bucket_array, sendable_guard.guard());
+                    }
+                }
                 // `usize::MAX` indicates that the rehashing is complete.
-                rehashing_guard.0 = usize::MAX;
+                rehashing_guard.1 = usize::MAX;
             }
-        }
-
-        if let Some(bucket_array) = current_array.try_drop_old_array(sendable_guard.guard()) {
-            self.defer_reclaim(bucket_array, sendable_guard.guard());
         }
     }
 
@@ -1237,12 +1234,17 @@ where
     ) -> bool {
         if let Some(old_array) = current_array.old_array(guard).as_ref() {
             if let Some(current) = Self::start_incremental_rehash(old_array) {
-                let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
-                    Self::end_incremental_rehash(old_array, prev, success);
-                });
+                let mut rehashing_guard =
+                    ExitGuard::new((old_array, current), |(old_array, prev)| {
+                        if prev != usize::MAX {
+                            Self::end_incremental_rehash(old_array, prev, false);
+                        }
+                    });
 
-                for bucket_index in current..(current + BUCKET_LEN).min(old_array.len()) {
-                    let old_bucket = old_array.bucket(bucket_index);
+                for bucket_index in
+                    rehashing_guard.1..(rehashing_guard.1 + BUCKET_LEN).min(old_array.len())
+                {
+                    let old_bucket = rehashing_guard.0.bucket(bucket_index);
                     let writer = if TRY_LOCK {
                         let Ok(writer) = Writer::try_lock(old_bucket) else {
                             return false;
@@ -1254,7 +1256,7 @@ where
                     if let Some(writer) = writer {
                         if !self.relocate_bucket_sync::<TRY_LOCK>(
                             current_array,
-                            old_array,
+                            rehashing_guard.0,
                             bucket_index,
                             writer,
                             guard,
@@ -1264,17 +1266,20 @@ where
                     }
                 }
 
-                rehashing_guard.1 = true;
-                drop(rehashing_guard);
+                if Self::end_incremental_rehash(rehashing_guard.0, rehashing_guard.1, true) {
+                    if let Some(bucket_array) = current_array
+                        .bucket_link()
+                        .swap((None, Tag::None), Acquire)
+                        .0
+                    {
+                        self.defer_reclaim(bucket_array, guard);
+                    }
+                }
+                // `usize::MAX` indicates that the rehashing is complete.
+                rehashing_guard.1 = usize::MAX;
             }
         }
-
-        if let Some(bucket_array) = current_array.try_drop_old_array(guard) {
-            self.defer_reclaim(bucket_array, guard);
-            true
-        } else {
-            !current_array.has_old_array()
-        }
+        !current_array.has_old_array()
     }
 
     /// Tries to enlarge [`HashTable`] if the estimated load factor is greater than `7/8`.

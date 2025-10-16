@@ -11,7 +11,7 @@ use std::ptr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicU8, AtomicUsize};
 
-use sdd::{AtomicShared, Epoch, Guard, Ptr, Shared, Tag};
+use sdd::{AtomicShared, Epoch, Guard, Shared, Tag};
 
 use super::Equivalent;
 use super::hash_table::HashTable;
@@ -265,6 +265,7 @@ where
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
         let sendable_guard = pin!(SendableGuard::default());
+        self.reclaim_memory(sendable_guard.guard());
         let locked_bucket = self.writer_async(hash, &sendable_guard).await;
         let prolonged_guard = self.prolonged_guard_ref(sendable_guard.guard());
         let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
@@ -346,6 +347,7 @@ where
     pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {
         let hash = self.hash(&key);
         let guard = Guard::new();
+        self.reclaim_memory(&guard);
         let prolonged_guard = self.prolonged_guard_ref(&guard);
         let locked_bucket = self.try_reserve_bucket(hash, prolonged_guard)?;
         let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
@@ -428,6 +430,7 @@ where
         mut pred: P,
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
         let sendable_guard = pin!(SendableGuard::default());
+        self.reclaim_memory(sendable_guard.guard());
         let mut entry = None;
         self.for_each_writer_async(0, 0, &sendable_guard, |locked_bucket| {
             let guard = self.prolonged_guard_ref(sendable_guard.guard());
@@ -471,6 +474,7 @@ where
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
         let mut entry = None;
         let guard = Guard::new();
+        self.reclaim_memory(&guard);
         let prolonged_guard = self.prolonged_guard_ref(&guard);
         self.for_each_writer_sync(0, 0, prolonged_guard, |locked_bucket| {
             let mut entry_ptr = EntryPtr::new(prolonged_guard);
@@ -512,6 +516,7 @@ where
     pub async fn insert_async(&self, key: K, val: V) -> Result<(), (K, V)> {
         let hash = self.hash(&key);
         let sendable_guard = pin!(SendableGuard::default());
+        self.reclaim_memory(sendable_guard.guard());
         let locked_bucket = self.writer_async(hash, &sendable_guard).await;
         let guard = sendable_guard.guard();
         let partial_hash = hash;
@@ -547,6 +552,7 @@ where
     pub fn insert_sync(&self, key: K, val: V) -> Result<(), (K, V)> {
         let hash = self.hash(&key);
         let guard = Guard::new();
+        self.reclaim_memory(&guard);
         let locked_bucket = self.writer_sync(hash, &guard);
         if locked_bucket.search(&key, hash, &guard).is_valid() {
             Err((key, val))
@@ -631,6 +637,7 @@ where
     {
         let hash = self.hash(key);
         let sendable_guard = pin!(SendableGuard::default());
+        self.reclaim_memory(sendable_guard.guard());
         let Some(mut locked_bucket) = self.optional_writer_async(hash, &sendable_guard).await
         else {
             return false;
@@ -669,6 +676,7 @@ where
     {
         let hash = self.hash(key);
         let guard = Guard::default();
+        self.reclaim_memory(&guard);
         let Some(mut locked_bucket) = self.optional_writer_sync(hash, &guard) else {
             return false;
         };
@@ -704,6 +712,7 @@ where
     {
         let hash = self.hash(key);
         let sendable_guard = pin!(SendableGuard::default());
+        self.reclaim_memory(sendable_guard.guard());
         let locked_bucket = self.optional_writer_async(hash, &sendable_guard).await?;
         let guard = self.prolonged_guard_ref(sendable_guard.guard());
         let entry_ptr = locked_bucket.search(key, hash, guard);
@@ -743,6 +752,7 @@ where
     {
         let hash = self.hash(key);
         let guard = Guard::new();
+        self.reclaim_memory(&guard);
         let prolonged_guard = self.prolonged_guard_ref(&guard);
         let locked_bucket = self.optional_writer_sync(hash, prolonged_guard)?;
         let entry_ptr = locked_bucket.search(key, hash, prolonged_guard);
@@ -826,6 +836,7 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let guard = Guard::new();
+        self.reclaim_memory(&guard);
         self.peek_entry(key, self.hash(key), &guard)
             .map(|(k, v)| reader(k, v))
     }
@@ -874,6 +885,7 @@ where
     #[inline]
     pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let sendable_guard = pin!(SendableGuard::default());
+        self.reclaim_memory(sendable_guard.guard());
         let mut result = true;
         self.for_each_reader_async(&sendable_guard, |reader, data_block| {
             let guard = sendable_guard.guard();
@@ -919,6 +931,7 @@ where
     pub fn iter_sync<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         let guard = Guard::new();
+        self.reclaim_memory(&guard);
         self.for_each_reader_sync(&guard, |reader, data_block| {
             let mut entry_ptr = EntryPtr::new(&guard);
             while entry_ptr.move_to_next(&reader, &guard) {
@@ -952,6 +965,7 @@ where
     #[inline]
     pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
         let sendable_guard = pin!(SendableGuard::default());
+        self.reclaim_memory(sendable_guard.guard());
         self.for_each_writer_async(0, 0, &sendable_guard, |mut locked_bucket| {
             let mut removed = false;
             let guard = sendable_guard.guard();
@@ -997,6 +1011,7 @@ where
     #[inline]
     pub fn retain_sync<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
         let guard = Guard::new();
+        self.reclaim_memory(&guard);
         self.for_each_writer_sync(0, 0, &guard, |mut locked_bucket| {
             let mut removed = false;
             let mut entry_ptr = EntryPtr::new(&guard);
@@ -1189,8 +1204,12 @@ where
         }
     }
 
-    /// Processes the garbage bucket array chain.
-    fn process_garbage_chain(&self, head_ptr: Ptr<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
+    #[inline]
+    fn reclaim_memory(&self, guard: &Guard) {
+        let head_ptr = self.garbage_chain.load(Acquire, guard);
+        if head_ptr.is_null() {
+            return;
+        }
         let garbage_epoch = self.garbage_epoch.load(Acquire);
         if Epoch::try_from(garbage_epoch).is_ok_and(|e| !e.in_same_generation(guard.epoch())) {
             if let Ok((mut garbage_head, _)) = self.garbage_chain.compare_exchange(
@@ -1202,7 +1221,7 @@ where
             ) {
                 while let Some(garbage_bucket_array) = garbage_head {
                     garbage_head = garbage_bucket_array
-                        .old_array_ptr()
+                        .bucket_link()
                         .swap((None, Tag::None), Acquire)
                         .0;
                     let dropped = unsafe { garbage_bucket_array.drop_in_place() };
@@ -1210,7 +1229,7 @@ where
                 }
             }
         } else {
-            // TODO: guard.accelerate(); <- fix this in MIRI.
+            guard.accelerate();
         }
     }
 }
@@ -1240,6 +1259,7 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let guard = Guard::new();
+        self.reclaim_memory(&guard);
         f.debug_map().entries(self.iter(&guard)).finish()
     }
 }
@@ -1328,7 +1348,7 @@ where
         let mut garbage_head = self.garbage_chain.swap((None, Tag::None), Acquire).0;
         while let Some(garbage_bucket_array) = garbage_head {
             garbage_head = garbage_bucket_array
-                .old_array_ptr()
+                .bucket_link()
                 .swap((None, Tag::None), Acquire)
                 .0;
             let dropped = unsafe { garbage_bucket_array.drop_in_place() };
@@ -1368,11 +1388,12 @@ where
 
     #[inline]
     fn defer_reclaim(&self, mut bucket_array: Shared<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
+        // The bucket array will be dropped when the epoch enters the next generation.
         self.garbage_epoch.store(u8::from(guard.epoch()), Release);
         let mut garbage_head_ptr = self.garbage_chain.load(Acquire, guard);
         loop {
             bucket_array
-                .old_array_ptr()
+                .bucket_link()
                 .swap((garbage_head_ptr.get_shared(), Tag::None), Release);
             match self.garbage_chain.compare_exchange(
                 garbage_head_ptr,
@@ -1387,14 +1408,6 @@ where
                 }
                 _ => break,
             }
-        }
-    }
-
-    #[inline]
-    fn reclaim_memory(&self, guard: &Guard) {
-        let head_ptr = self.garbage_chain.load(Acquire, guard);
-        if !head_ptr.is_null() {
-            self.process_garbage_chain(head_ptr, guard);
         }
     }
 
@@ -1423,6 +1436,7 @@ where
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         let guard = Guard::new();
+        self.reclaim_memory(&guard);
         if !self
             .iter(&guard)
             .any(|(k, v)| other.peek_with(k, |_, ov| v == ov) != Some(true))

@@ -3,9 +3,9 @@ use std::mem::{align_of, size_of};
 use std::panic::UnwindSafe;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+use sdd::{AtomicShared, Guard, Ptr, Tag};
 
 use super::bucket::{BUCKET_LEN, Bucket, DataBlock, INDEX, LruList};
 use crate::exit_guard::ExitGuard;
@@ -156,6 +156,12 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         unsafe { self.data_blocks.add(index) }
     }
 
+    /// Returns a reference to the old array pointer.
+    #[inline]
+    pub(crate) const fn bucket_link(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>> {
+        &self.old_array
+    }
+
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) fn full_sample_size(&self) -> usize {
@@ -168,33 +174,10 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         !self.old_array.is_null(Acquire)
     }
 
-    /// Returns a reference to the old array pointer.
-    #[inline]
-    pub(crate) fn old_array_ptr(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>> {
-        &self.old_array
-    }
-
     /// Returns a [`Ptr`] to the old array.
     #[inline]
     pub(crate) fn old_array<'g>(&self, guard: &'g Guard) -> Ptr<'g, BucketArray<K, V, L, TYPE>> {
         self.old_array.load(Acquire, guard)
-    }
-
-    /// Drops the old array.
-    #[inline]
-    pub(crate) fn try_drop_old_array(&self, guard: &Guard) -> Option<Shared<Self>> {
-        if let Some(old_array) = self.old_array(guard).as_ref() {
-            let metadata = old_array.rehashing_metadata().load(Relaxed);
-            if (metadata & (BUCKET_LEN - 1) == 0) && metadata >= old_array.len() {
-                // It is OK to pass the old array instance to the garbage collector, deferring destruction.
-                debug_assert_eq!(
-                    old_array.num_cleared_buckets.load(Relaxed),
-                    old_array.array_len.max(BUCKET_LEN)
-                );
-                return self.old_array.swap((None, Tag::None), Release).0;
-            }
-        }
-        None
     }
 
     /// Calculates the layout of the memory block for an array of `T`.

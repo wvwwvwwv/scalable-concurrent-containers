@@ -386,7 +386,7 @@ impl<T> Queue<T> {
                 Ok(_) => {
                     self.newest
                         .swap((Some(new_entry.clone()), Tag::None), AcqRel);
-                    if self.oldest.is_null(Relaxed) {
+                    if self.oldest.is_null(Acquire) {
                         // The `Queue` was emptied in the meantime.
                         self.newest.swap((None, Tag::None), Acquire);
                     }

@@ -1178,14 +1178,17 @@ where
     fn hasher(&self) -> &H {
         &self.build_hasher
     }
+
     #[inline]
     fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, DoublyLinkedList, CACHE>> {
         &self.bucket_array
     }
+
     #[inline]
     fn minimum_capacity(&self) -> &AtomicUsize {
         &self.minimum_capacity
     }
+
     #[inline]
     fn maximum_capacity(&self) -> usize {
         self.maximum_capacity
