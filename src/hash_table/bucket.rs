@@ -23,7 +23,7 @@ pub struct Bucket<K, V, L: LruList, const TYPE: char> {
     /// The epoch value when the [`Bucket`] was last updated.
     ///
     /// The field is only used when `TYPE == OPTIMISTIC`.
-    epoch: UnsafeCell<Epoch>,
+    epoch: UnsafeCell<Option<Epoch>>,
     /// [`Bucket`] metadata.
     metadata: Metadata<K, V, BUCKET_LEN>,
     /// Reader-writer lock.
@@ -242,7 +242,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 .removed_bitmap_or_lru_tail
                 .store(removed_bitmap, Release);
         }
-        self.update_epoch(guard);
+        self.update_epoch(Some(guard));
     }
 
     /// Evicts the least recently used entry if the [`Bucket`] is full.
@@ -413,18 +413,21 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     ) {
         debug_assert_eq!(TYPE, INDEX);
 
-        let current_epoch = guard.epoch();
         let prev_epoch = *Self::read_cell(&self.epoch);
-        if !prev_epoch.in_same_generation(current_epoch) {
-            Self::cleanup_removed_entries(&self.metadata, unsafe { data_block.as_ref() });
+        if prev_epoch.is_some_and(|e| !e.in_same_generation(guard.epoch())) {
+            let mut empty =
+                Self::cleanup_removed_entries(&self.metadata, unsafe { data_block.as_ref() });
             let mut link_ptr = self.metadata.link.load(Acquire, guard);
             while let Some(link) = link_ptr.as_ref() {
-                Self::cleanup_removed_entries(&link.metadata, &link.data_block);
+                empty &= Self::cleanup_removed_entries(&link.metadata, &link.data_block);
                 let next_link_ptr = link.metadata.link.load(Acquire, guard);
                 if next_link_ptr.is_null() {
                     self.cleanup_empty_link(link_ptr.as_ptr());
                 }
                 link_ptr = next_link_ptr;
+            }
+            if empty {
+                self.update_epoch(None);
             }
         }
     }
@@ -434,12 +437,12 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     fn cleanup_removed_entries<const LEN: usize>(
         metadata: &Metadata<K, V, LEN>,
         data_block: &DataBlock<K, V, LEN>,
-    ) {
+    ) -> bool {
         debug_assert_eq!(TYPE, INDEX);
 
         let mut removed_bitmap = metadata.removed_bitmap_or_lru_tail.load(Relaxed);
         if removed_bitmap == 0 {
-            return;
+            return true;
         }
 
         let mut occupied_bitmap = metadata.occupied_bitmap.load(Relaxed);
@@ -461,6 +464,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         metadata
             .removed_bitmap_or_lru_tail
             .store(removed_bitmap, Release);
+        removed_bitmap == 0
     }
 
     /// Cleans up empty linked buckets.
@@ -589,11 +593,15 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Updates the target epoch after removing an entry.
     #[inline]
-    fn update_epoch(&self, guard: &Guard) {
+    fn update_epoch(&self, guard: Option<&Guard>) {
         debug_assert_eq!(TYPE, INDEX);
 
         self.write_cell(&self.epoch, |e| {
-            *e = guard.epoch();
+            if let Some(guard) = guard {
+                e.replace(guard.epoch());
+            } else {
+                e.take();
+            }
         });
     }
 

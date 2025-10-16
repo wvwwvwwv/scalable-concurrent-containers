@@ -1376,10 +1376,6 @@ where
             // The preliminary sampling result cannot be trusted anymore.
             return;
         }
-        if TYPE == INDEX && current_array.has_old_array() {
-            // The bucket array was already retired.
-            return;
-        }
 
         // If the estimated load factor is greater than `7/8`, then the hash table grows. On the
         // other hand, if the estimated load factor is less than `1/8`, then the hash table shrinks
@@ -1435,6 +1431,7 @@ where
             // The bucket array is being replaced with a new one.
             return;
         }
+        debug_assert!(!current_array.has_old_array());
 
         if try_drop_table {
             // Try to drop the hash table with all the buckets locked.

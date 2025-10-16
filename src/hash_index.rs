@@ -1204,6 +1204,7 @@ where
         }
     }
 
+    /// Reclaims memory by dropping all garbage bucket arrays if they are unreachable.
     #[inline]
     fn reclaim_memory(&self, guard: &Guard) {
         let head_ptr = self.garbage_chain.load(Acquire, guard);
