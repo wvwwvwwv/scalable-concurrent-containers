@@ -126,6 +126,18 @@ pub struct ConsumableEntry<'b, 'g: 'b, K, V> {
     guard: &'g Guard,
 }
 
+/// [`ReplaceResult`] is the result type of the [`HashMap::replace_async`] and
+/// [`HashMap::replace_sync`] methods.
+pub enum ReplaceResult<'h, K, V, H = RandomState>
+where
+    H: BuildHasher,
+{
+    /// The entry was replaced.
+    Replaced(OccupiedEntry<'h, K, V, H>, K),
+    /// The entry was not replaced.
+    NotReplaced(VacantEntry<'h, K, V, H>),
+}
+
 /// [`Reserve`] keeps the capacity of the associated [`HashMap`] higher than a certain level.
 ///
 /// The [`HashMap`] does not shrink the capacity below the reserved capacity.
@@ -683,6 +695,156 @@ where
             Some(updater(k, v))
         } else {
             None
+        }
+    }
+
+    /// Replaces an entry in the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::cmp::{Eq, PartialEq};
+    /// use std::hash::{Hash, Hasher};
+    ///
+    /// use scc::HashMap;
+    /// use scc::hash_map::ReplaceResult;
+    ///
+    /// #[derive(Debug)]
+    /// struct MaybeEqual(u64, u64);
+    ///
+    /// impl Eq for MaybeEqual {}
+    ///
+    /// impl Hash for MaybeEqual {
+    ///     fn hash<H: Hasher>(&self, state: &mut H) {
+    ///         // Do not read `self.1`.
+    ///         self.0.hash(state);
+    ///     }
+    /// }
+    ///
+    /// impl PartialEq for MaybeEqual {
+    ///     fn eq(&self, other: &Self) -> bool {
+    ///         // Do not compare `self.1`.
+    ///         self.0 == other.0
+    ///     }
+    /// }
+    ///
+    /// let hashmap: HashMap<MaybeEqual, usize> = HashMap::default();
+    ///
+    /// async {
+    ///     let ReplaceResult::NotReplaced(v) = hashmap.replace_async(MaybeEqual(11, 7)).await else {
+    ///         unreachable!();
+    ///     };
+    ///     drop(v.insert_entry(17));
+    ///     let ReplaceResult::Replaced(_, k) = hashmap.replace_async(MaybeEqual(11, 11)).await else {
+    ///         unreachable!();
+    ///     };
+    ///     assert_eq!(k.1, 7);
+    /// };
+    /// ```
+    #[inline]
+    pub async fn replace_async(&self, key: K) -> ReplaceResult<'_, K, V, H> {
+        let hash = self.hash(&key);
+        let sendable_guard = pin!(SendableGuard::default());
+        let locked_bucket = self.writer_async(hash, &sendable_guard).await;
+        let prolonged_guard = self.prolonged_guard_ref(sendable_guard.guard());
+        let mut entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
+            let prev_key = replace(
+                &mut entry_ptr
+                    .get_mut(locked_bucket.data_block, &locked_bucket.writer)
+                    .0,
+                key,
+            );
+            ReplaceResult::Replaced(
+                OccupiedEntry {
+                    hashmap: self,
+                    locked_bucket,
+                    entry_ptr,
+                },
+                prev_key,
+            )
+        } else {
+            ReplaceResult::NotReplaced(VacantEntry {
+                hashmap: self,
+                key,
+                hash,
+                locked_bucket,
+            })
+        }
+    }
+
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// If the key exists, replaces the key with the given one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::cmp::{Eq, PartialEq};
+    /// use std::hash::{Hash, Hasher};
+    ///
+    /// use scc::HashMap;
+    /// use scc::hash_map::ReplaceResult;
+    ///
+    /// #[derive(Debug)]
+    /// struct MaybeEqual(u64, u64);
+    ///
+    /// impl Eq for MaybeEqual {}
+    ///
+    /// impl Hash for MaybeEqual {
+    ///     fn hash<H: Hasher>(&self, state: &mut H) {
+    ///         // Do not read `self.1`.
+    ///         self.0.hash(state);
+    ///     }
+    /// }
+    ///
+    /// impl PartialEq for MaybeEqual {
+    ///     fn eq(&self, other: &Self) -> bool {
+    ///         // Do not compare `self.1`.
+    ///         self.0 == other.0
+    ///     }
+    /// }
+    ///
+    /// let hashmap: HashMap<MaybeEqual, usize> = HashMap::default();
+    ///
+    /// let ReplaceResult::NotReplaced(v) = hashmap.replace_sync(MaybeEqual(11, 7)) else {
+    ///     unreachable!();
+    /// };
+    /// drop(v.insert_entry(17));
+    /// let ReplaceResult::Replaced(_, k) = hashmap.replace_sync(MaybeEqual(11, 11)) else {
+    ///     unreachable!();
+    /// };
+    /// assert_eq!(k.1, 7);
+    /// ```
+    #[inline]
+    pub fn replace_sync(&self, key: K) -> ReplaceResult<'_, K, V, H> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        let locked_bucket = self.writer_sync(hash, &guard);
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        let mut entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
+            let prev_key = replace(
+                &mut entry_ptr
+                    .get_mut(locked_bucket.data_block, &locked_bucket.writer)
+                    .0,
+                key,
+            );
+            ReplaceResult::Replaced(
+                OccupiedEntry {
+                    hashmap: self,
+                    locked_bucket,
+                    entry_ptr,
+                },
+                prev_key,
+            )
+        } else {
+            ReplaceResult::NotReplaced(VacantEntry {
+                hashmap: self,
+                key,
+                hash,
+                locked_bucket,
+            })
         }
     }
 
