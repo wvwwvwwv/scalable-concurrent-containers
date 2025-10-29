@@ -95,6 +95,18 @@ pub struct ConsumableEntry<'b, 'g: 'b, K, V> {
     guard: &'g Guard,
 }
 
+/// [`ReplaceResult`] is the result type of the [`HashCache::replace_async`] and
+/// [`HashCache::replace_sync`] methods.
+pub enum ReplaceResult<'h, K, V, H = RandomState>
+where
+    H: BuildHasher,
+{
+    /// The key was replaced.
+    Replaced(OccupiedEntry<'h, K, V, H>, K),
+    /// The key did not exist in the [`HashCache`].
+    NotReplaced(VacantEntry<'h, K, V, H>),
+}
+
 impl<K, V, H> HashCache<K, V, H>
 where
     H: BuildHasher,
@@ -379,6 +391,200 @@ where
         }
     }
 
+    /// Replaces an entry in the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::cmp::{Eq, PartialEq};
+    /// use std::hash::{Hash, Hasher};
+    ///
+    /// use scc::HashCache;
+    /// use scc::hash_cache::ReplaceResult;
+    ///
+    /// #[derive(Debug)]
+    /// struct MaybeEqual(u64, u64);
+    ///
+    /// impl Eq for MaybeEqual {}
+    ///
+    /// impl Hash for MaybeEqual {
+    ///     fn hash<H: Hasher>(&self, state: &mut H) {
+    ///         // Do not read `self.1`.
+    ///         self.0.hash(state);
+    ///     }
+    /// }
+    ///
+    /// impl PartialEq for MaybeEqual {
+    ///     fn eq(&self, other: &Self) -> bool {
+    ///         // Do not compare `self.1`.
+    ///         self.0 == other.0
+    ///     }
+    /// }
+    ///
+    /// let hashcache: HashCache<MaybeEqual, usize> = HashCache::default();
+    ///
+    /// async {
+    ///     let ReplaceResult::NotReplaced(v) = hashcache.replace_async(MaybeEqual(11, 7)).await else {
+    ///         unreachable!();
+    ///     };
+    ///     drop(v.put_entry(17));
+    ///     let ReplaceResult::Replaced(_, k) = hashcache.replace_async(MaybeEqual(11, 11)).await else {
+    ///         unreachable!();
+    ///     };
+    ///     assert_eq!(k.1, 7);
+    /// };
+    /// ```
+    #[inline]
+    pub async fn replace_async(&self, key: K) -> ReplaceResult<'_, K, V, H> {
+        let hash = self.hash(&key);
+        let sendable_guard = pin!(SendableGuard::default());
+        let locked_bucket = self.writer_async(hash, &sendable_guard).await;
+        let prolonged_guard = self.prolonged_guard_ref(sendable_guard.guard());
+        let mut entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
+            let prev_key = replace(
+                &mut entry_ptr
+                    .get_mut(locked_bucket.data_block, &locked_bucket.writer)
+                    .0,
+                key,
+            );
+            ReplaceResult::Replaced(
+                OccupiedEntry {
+                    hashcache: self,
+                    locked_bucket,
+                    entry_ptr,
+                },
+                prev_key,
+            )
+        } else {
+            ReplaceResult::NotReplaced(VacantEntry {
+                hashcache: self,
+                key,
+                hash,
+                locked_bucket,
+            })
+        }
+    }
+
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// If the key exists, replaces the key with the given one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::cmp::{Eq, PartialEq};
+    /// use std::hash::{Hash, Hasher};
+    ///
+    /// use scc::HashCache;
+    /// use scc::hash_cache::ReplaceResult;
+    ///
+    /// #[derive(Debug)]
+    /// struct MaybeEqual(u64, u64);
+    ///
+    /// impl Eq for MaybeEqual {}
+    ///
+    /// impl Hash for MaybeEqual {
+    ///     fn hash<H: Hasher>(&self, state: &mut H) {
+    ///         // Do not read `self.1`.
+    ///         self.0.hash(state);
+    ///     }
+    /// }
+    ///
+    /// impl PartialEq for MaybeEqual {
+    ///     fn eq(&self, other: &Self) -> bool {
+    ///         // Do not compare `self.1`.
+    ///         self.0 == other.0
+    ///     }
+    /// }
+    ///
+    /// let hashcache: HashCache<MaybeEqual, usize> = HashCache::default();
+    ///
+    /// let ReplaceResult::NotReplaced(v) = hashcache.replace_sync(MaybeEqual(11, 7)) else {
+    ///     unreachable!();
+    /// };
+    /// drop(v.put_entry(17));
+    /// let ReplaceResult::Replaced(_, k) = hashcache.replace_sync(MaybeEqual(11, 11)) else {
+    ///     unreachable!();
+    /// };
+    /// assert_eq!(k.1, 7);
+    /// ```
+    #[inline]
+    pub fn replace_sync(&self, key: K) -> ReplaceResult<'_, K, V, H> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        let locked_bucket = self.writer_sync(hash, &guard);
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        let mut entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        if entry_ptr.is_valid() {
+            let prev_key = replace(
+                &mut entry_ptr
+                    .get_mut(locked_bucket.data_block, &locked_bucket.writer)
+                    .0,
+                key,
+            );
+            ReplaceResult::Replaced(
+                OccupiedEntry {
+                    hashcache: self,
+                    locked_bucket,
+                    entry_ptr,
+                },
+                prev_key,
+            )
+        } else {
+            ReplaceResult::NotReplaced(VacantEntry {
+                hashcache: self,
+                key,
+                hash,
+                locked_bucket,
+            })
+        }
+    }
+
+    /// Removes a key-value pair if the key exists.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    /// let future_put = hashcache.put_async(11, 17);
+    /// let future_remove = hashcache.remove_async(&11);
+    /// ```
+    #[inline]
+    pub async fn remove_async<Q>(&self, key: &Q) -> Option<(K, V)>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        self.remove_if_async(key, |_| true).await
+    }
+
+    /// Removes a key-value pair if the key exists.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.remove_sync(&1).is_none());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
+    /// assert_eq!(hashcache.remove_sync(&1).unwrap(), (1, 0));
+    /// ```
+    #[inline]
+    pub fn remove_sync<Q>(&self, key: &Q) -> Option<(K, V)>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        self.remove_if_sync(key, |_| true)
+    }
+
     /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
     ///
     /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
@@ -545,50 +751,6 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.read_sync(key, |_, _| ()).is_some()
-    }
-
-    /// Removes a key-value pair if the key exists.
-    ///
-    /// Returns `None` if the key does not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    /// let future_put = hashcache.put_async(11, 17);
-    /// let future_remove = hashcache.remove_async(&11);
-    /// ```
-    #[inline]
-    pub async fn remove_async<Q>(&self, key: &Q) -> Option<(K, V)>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        self.remove_if_async(key, |_| true).await
-    }
-
-    /// Removes a key-value pair if the key exists.
-    ///
-    /// Returns `None` if the key does not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    ///
-    /// assert!(hashcache.remove_sync(&1).is_none());
-    /// assert!(hashcache.put_sync(1, 0).is_ok());
-    /// assert_eq!(hashcache.remove_sync(&1).unwrap(), (1, 0));
-    /// ```
-    #[inline]
-    pub fn remove_sync<Q>(&self, key: &Q) -> Option<(K, V)>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        self.remove_if_sync(key, |_| true)
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.

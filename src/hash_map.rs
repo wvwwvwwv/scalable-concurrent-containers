@@ -132,9 +132,9 @@ pub enum ReplaceResult<'h, K, V, H = RandomState>
 where
     H: BuildHasher,
 {
-    /// The entry was replaced.
+    /// The key was replaced.
     Replaced(OccupiedEntry<'h, K, V, H>, K),
-    /// The entry was not replaced.
+    /// The key did not exist in the [`HashMap`].
     NotReplaced(VacantEntry<'h, K, V, H>),
 }
 
