@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.3.3
+
+* API update: add `{HashMap, HashCache}::{replace_async, replace_sync}`.
+
 3.3.2
 
 * Remove the `'static` bound from `HashIndex`: [#200](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/200).

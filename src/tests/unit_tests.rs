@@ -16,7 +16,7 @@ mod hashmap {
     use tokio::sync::Barrier as AsyncBarrier;
 
     use crate::async_helper::SendableGuard;
-    use crate::hash_map::{self, Entry, Reserve};
+    use crate::hash_map::{self, Entry, ReplaceResult, Reserve};
     use crate::hash_table::bucket::{MAP, Writer};
     use crate::{Equivalent, HashMap};
 
@@ -106,6 +106,20 @@ mod hashmap {
         }
     }
 
+    #[derive(Debug)]
+    struct MaybeEqual(u64, u64);
+    impl Eq for MaybeEqual {}
+    impl Hash for MaybeEqual {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.hash(state);
+        }
+    }
+    impl PartialEq for MaybeEqual {
+        fn eq(&self, other: &Self) -> bool {
+            self.0 == other.0
+        }
+    }
+
     #[test]
     fn equivalent() {
         let hashmap: HashMap<EqTest, usize> = HashMap::default();
@@ -180,6 +194,49 @@ mod hashmap {
         assert_eq!(hashmap.len(), workload_size);
         drop(hashmap);
         assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn replace_async() {
+        let hashmap: HashMap<MaybeEqual, u64> = HashMap::default();
+        let workload_size = 256;
+        for k in 0..workload_size {
+            let ReplaceResult::NotReplaced(v) = hashmap.replace_async(MaybeEqual(k, 0)).await
+            else {
+                unreachable!();
+            };
+            v.insert_entry(k);
+        }
+        for k in 0..workload_size {
+            let ReplaceResult::Replaced(o, p) = hashmap.replace_async(MaybeEqual(k, 1)).await
+            else {
+                unreachable!();
+            };
+            assert_eq!(p.1, 0);
+            assert_eq!(o.get(), &k);
+        }
+        assert!(hashmap.any_async(|k, _| k.1 == 0).await.is_none());
+    }
+
+    #[test]
+    fn replace_sync() {
+        let hashmap: HashMap<MaybeEqual, u64> = HashMap::default();
+        let workload_size = 256;
+        for k in 0..workload_size {
+            let ReplaceResult::NotReplaced(v) = hashmap.replace_sync(MaybeEqual(k, 0)) else {
+                unreachable!();
+            };
+            v.insert_entry(k);
+        }
+        for k in 0..workload_size {
+            let ReplaceResult::Replaced(o, p) = hashmap.replace_sync(MaybeEqual(k, 1)) else {
+                unreachable!();
+            };
+            assert_eq!(p.1, 0);
+            assert_eq!(o.get(), &k);
+        }
+        assert!(hashmap.any_sync(|k, _| k.1 == 0).is_none());
     }
 
     #[cfg_attr(miri, ignore)]
@@ -1884,7 +1941,7 @@ mod hashcache {
 
     use proptest::prelude::*;
 
-    use crate::hash_cache;
+    use crate::hash_cache::{self, ReplaceResult};
     use crate::{Equivalent, HashCache};
 
     static_assertions::assert_not_impl_any!(HashCache<Rc<String>, Rc<String>>: Send, Sync);
@@ -1930,6 +1987,20 @@ mod hashcache {
         }
     }
 
+    #[derive(Debug)]
+    struct MaybeEqual(u64, u64);
+    impl Eq for MaybeEqual {}
+    impl Hash for MaybeEqual {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.hash(state);
+        }
+    }
+    impl PartialEq for MaybeEqual {
+        fn eq(&self, other: &Self) -> bool {
+            self.0 == other.0
+        }
+    }
+
     #[test]
     fn equivalent() {
         let hashcache: HashCache<EqTest, usize> = HashCache::default();
@@ -1965,6 +2036,49 @@ mod hashcache {
         assert!(INST_CNT.load(Relaxed) <= hashcache.capacity());
         drop(hashcache);
         assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn replace_async() {
+        let hashcache: HashCache<MaybeEqual, u64> = HashCache::default();
+        let workload_size = 256;
+        for k in 0..workload_size {
+            let ReplaceResult::NotReplaced(v) = hashcache.replace_async(MaybeEqual(k, 0)).await
+            else {
+                unreachable!();
+            };
+            v.put_entry(k);
+        }
+        for k in 0..workload_size {
+            let ReplaceResult::Replaced(o, p) = hashcache.replace_async(MaybeEqual(k, 1)).await
+            else {
+                continue;
+            };
+            assert_eq!(p.1, 0);
+            assert_eq!(o.get(), &k);
+        }
+        assert!(hashcache.iter_async(|k, _| k.1 == 1).await);
+    }
+
+    #[test]
+    fn replace_sync() {
+        let hashcache: HashCache<MaybeEqual, u64> = HashCache::default();
+        let workload_size = 256;
+        for k in 0..workload_size {
+            let ReplaceResult::NotReplaced(v) = hashcache.replace_sync(MaybeEqual(k, 0)) else {
+                unreachable!();
+            };
+            v.put_entry(k);
+        }
+        for k in 0..workload_size {
+            let ReplaceResult::Replaced(o, p) = hashcache.replace_sync(MaybeEqual(k, 1)) else {
+                continue;
+            };
+            assert_eq!(p.1, 0);
+            assert_eq!(o.get(), &k);
+        }
+        assert!(hashcache.iter_sync(|k, _| k.1 == 1));
     }
 
     #[test]

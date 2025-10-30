@@ -104,6 +104,8 @@ where
     /// The key was replaced.
     Replaced(OccupiedEntry<'h, K, V, H>, K),
     /// The key did not exist in the [`HashCache`].
+    ///
+    /// An [`OccupiedEntry`] can be created from the [`VacantEntry`].
     NotReplaced(VacantEntry<'h, K, V, H>),
 }
 
@@ -391,7 +393,8 @@ where
         }
     }
 
-    /// Replaces an entry in the map.
+    /// Adds a key to the [`HashCache`], replacing the existing key, if any, that is equal to the
+    /// given one.
     ///
     /// # Examples
     ///
@@ -466,9 +469,8 @@ where
         }
     }
 
-    /// Gets the entry associated with the given key in the map for in-place manipulation.
-    ///
-    /// If the key exists, replaces the key with the given one.
+    /// Adds a key to the [`HashCache`], replacing the existing key, if any, that is equal to the
+    /// given one.
     ///
     /// # Examples
     ///
