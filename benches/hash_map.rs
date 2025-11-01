@@ -1,10 +1,46 @@
 use std::time::{Duration, Instant};
 
+use criterion::async_executor::FuturesExecutor;
 use criterion::{Criterion, criterion_group, criterion_main};
 use scc::HashMap;
 
-fn insert_cold(c: &mut Criterion) {
-    c.bench_function("HashMap: insert, cold", |b| {
+fn insert_single_async(c: &mut Criterion) {
+    c.bench_function("HashMap: insert_single_async", |b| {
+        let hashmap: HashMap<u64, u64> = HashMap::default();
+        async fn test(hashmap: &HashMap<u64, u64>) {
+            assert!(hashmap.insert_async(0, 0).await.is_ok());
+            assert!(hashmap.remove_async(&0).await.is_some());
+        }
+        b.to_async(FuturesExecutor).iter(|| test(&hashmap));
+    });
+}
+
+fn insert_single_sync(c: &mut Criterion) {
+    c.bench_function("HashMap: insert_single_sync", |b| {
+        let hashmap: HashMap<u64, u64> = HashMap::default();
+        fn test(hashmap: &HashMap<u64, u64>) {
+            assert!(hashmap.insert_sync(0, 0).is_ok());
+            assert!(hashmap.remove_sync(&0).is_some());
+        }
+        b.iter(|| test(&hashmap));
+    });
+}
+
+fn insert_cold_async(c: &mut Criterion) {
+    c.bench_function("HashMap: insert_cold_async", |b| {
+        b.to_async(FuturesExecutor).iter_custom(async |iters| {
+            let hashmap: HashMap<u64, u64> = HashMap::default();
+            let start = Instant::now();
+            for i in 0..iters {
+                assert!(hashmap.insert_async(i, i).await.is_ok());
+            }
+            start.elapsed()
+        })
+    });
+}
+
+fn insert_cold_sync(c: &mut Criterion) {
+    c.bench_function("HashMap: insert_cold_sync", |b| {
         b.iter_custom(|iters| {
             let hashmap: HashMap<u64, u64> = HashMap::default();
             let start = Instant::now();
@@ -16,8 +52,21 @@ fn insert_cold(c: &mut Criterion) {
     });
 }
 
-fn insert_warmed_up(c: &mut Criterion) {
-    c.bench_function("HashMap: insert, warmed up", |b| {
+fn insert_warmed_up_async(c: &mut Criterion) {
+    c.bench_function("HashMap: insert_warmed_up_async", |b| {
+        b.to_async(FuturesExecutor).iter_custom(async |iters| {
+            let hashmap: HashMap<u64, u64> = HashMap::with_capacity(iters as usize * 2);
+            let start = Instant::now();
+            for i in 0..iters {
+                assert!(hashmap.insert_async(i, i).await.is_ok());
+            }
+            start.elapsed()
+        })
+    });
+}
+
+fn insert_warmed_up_sync(c: &mut Criterion) {
+    c.bench_function("HashMap: insert_warmed_up_sync", |b| {
         b.iter_custom(|iters| {
             let hashmap: HashMap<u64, u64> = HashMap::with_capacity(iters as usize * 2);
             let start = Instant::now();
@@ -29,8 +78,24 @@ fn insert_warmed_up(c: &mut Criterion) {
     });
 }
 
-fn read(c: &mut Criterion) {
-    c.bench_function("HashMap: read", |b| {
+fn read_async(c: &mut Criterion) {
+    c.bench_function("HashMap: read_async", |b| {
+        b.to_async(FuturesExecutor).iter_custom(async |iters| {
+            let hashmap: HashMap<u64, u64> = HashMap::with_capacity(iters as usize * 2);
+            for i in 0..iters {
+                assert!(hashmap.insert_async(i, i).await.is_ok());
+            }
+            let start = Instant::now();
+            for i in 0..iters {
+                assert_eq!(hashmap.read_async(&i, |_, v| *v == i).await, Some(true));
+            }
+            start.elapsed()
+        })
+    });
+}
+
+fn read_sync(c: &mut Criterion) {
+    c.bench_function("HashMap: read_sync", |b| {
         b.iter_custom(|iters| {
             let hashmap: HashMap<u64, u64> = HashMap::with_capacity(iters as usize * 2);
             for i in 0..iters {
@@ -71,9 +136,14 @@ fn insert_tail_latency(c: &mut Criterion) {
 
 criterion_group!(
     hash_map,
-    insert_cold,
+    insert_single_async,
+    insert_single_sync,
+    insert_cold_async,
+    insert_cold_sync,
+    insert_warmed_up_async,
+    insert_warmed_up_sync,
     insert_tail_latency,
-    insert_warmed_up,
-    read
+    read_async,
+    read_sync
 );
 criterion_main!(hash_map);

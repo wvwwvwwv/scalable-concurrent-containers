@@ -1,10 +1,24 @@
 use std::time::Instant;
 
+use criterion::async_executor::FuturesExecutor;
 use criterion::{Criterion, criterion_group, criterion_main};
 use scc::{Guard, TreeIndex};
 
-fn insert(c: &mut Criterion) {
-    c.bench_function("TreeIndex: insert", |b| {
+fn insert_async(c: &mut Criterion) {
+    c.bench_function("TreeIndex: insert_async", |b| {
+        b.to_async(FuturesExecutor).iter_custom(async |iters| {
+            let treeindex: TreeIndex<u64, u64> = TreeIndex::default();
+            let start = Instant::now();
+            for i in 0..iters {
+                assert!(treeindex.insert_async(i, i).await.is_ok());
+            }
+            start.elapsed()
+        })
+    });
+}
+
+fn insert_sync(c: &mut Criterion) {
+    c.bench_function("TreeIndex: insert_sync", |b| {
         b.iter_custom(|iters| {
             let treeindex: TreeIndex<u64, u64> = TreeIndex::default();
             let start = Instant::now();
@@ -64,5 +78,12 @@ fn peek(c: &mut Criterion) {
     });
 }
 
-criterion_group!(tree_index, insert, insert_rev, iter_with, peek);
+criterion_group!(
+    tree_index,
+    insert_async,
+    insert_sync,
+    insert_rev,
+    iter_with,
+    peek
+);
 criterion_main!(tree_index);
