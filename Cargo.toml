@@ -18,7 +18,7 @@ members = [".", "examples", "extended_tests"]
 [dependencies]
 equivalent = { version = "1.0", optional = true }
 loom = { version = "0.7", optional = true }
-saa = "5.0"
+saa = "5.3"
 sdd = "4.2"
 serde = { version = "1.0", optional = true }
 
@@ -31,7 +31,7 @@ futures = "0.3"
 proptest = "1.7"
 serde_test = "1.0"
 static_assertions = "1.1"
-tokio = { version = "1.47", features = ["full"] }
+tokio = { version = "1.48", features = ["full"] }
 
 [[bench]]
 name = "bag"

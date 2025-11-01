@@ -1429,7 +1429,7 @@ mod async_benchmarks {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn benchmarks_async() {
         hashmap_benchmark(65536, vec![1, 2, 4]).await;
         hashindex_benchmark(65536, vec![1, 2, 4]).await;
@@ -1437,7 +1437,7 @@ mod async_benchmarks {
     }
 
     #[ignore = "too long"]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 96)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 128)]
     async fn full_scale_benchmarks_async() {
         hashmap_benchmark(
             1024 * 1024 * 16,
