@@ -13,7 +13,7 @@ use sdd::Guard;
 
 use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
-use crate::async_helper::SendableGuard;
+use crate::async_helper::AsyncGuard;
 use crate::hash_map;
 
 /// Scalable concurrent hash set.
@@ -219,9 +219,9 @@ where
     #[inline]
     pub async fn replace_async(&self, mut key: K) -> Option<K> {
         let hash = self.map.hash(&key);
-        let sendable_guard = pin!(SendableGuard::default());
-        let mut locked_bucket = self.map.writer_async(hash, &sendable_guard).await;
-        let guard = sendable_guard.guard();
+        let async_guard = pin!(AsyncGuard::default());
+        let mut locked_bucket = self.map.writer_async(hash, &async_guard).await;
+        let guard = async_guard.guard();
         let mut entry_ptr = locked_bucket.search(&key, hash, guard);
         if entry_ptr.is_valid() {
             let k = &mut locked_bucket.entry_mut(&mut entry_ptr).0;

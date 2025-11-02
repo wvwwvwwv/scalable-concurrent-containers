@@ -7,12 +7,12 @@ use saa::lock::Mode;
 use saa::{Lock, Pager};
 use sdd::{AtomicShared, Guard};
 
-/// [`SendableGuard`] is used when an asynchronous task needs to be suspended without invalidating
-/// any references.
+/// [`AsyncGuard`] is used when an asynchronous task needs to be suspended without invalidating any
+/// references.
 ///
 /// The validity of those references must be checked and verified by the user.
 #[derive(Debug, Default)]
-pub(crate) struct SendableGuard {
+pub(crate) struct AsyncGuard {
     /// [`Guard`] that can be dropped without invalidating any references.
     guard: UnsafeCell<Option<Guard>>,
 }
@@ -30,8 +30,8 @@ pub(crate) trait TryWait {
     fn try_wait(&mut self, lock: &Lock);
 }
 
-impl SendableGuard {
-    /// Returns `true` if the [`SendableGuard`] contains a valid [`Guard`].
+impl AsyncGuard {
+    /// Returns `true` if the [`AsyncGuard`] contains a valid [`Guard`].
     #[inline]
     pub(crate) fn has_guard(&self) -> bool {
         unsafe { (*self.guard.get()).is_some() }
@@ -48,7 +48,7 @@ impl SendableGuard {
         unsafe { (*self.guard.get()).get_or_insert_with(Guard::new) }
     }
 
-    /// Resets the [`SendableGuard`] to its initial state.
+    /// Resets the [`AsyncGuard`] to its initial state.
     #[inline]
     pub(crate) fn reset(&self) {
         unsafe {
@@ -72,10 +72,10 @@ impl SendableGuard {
     }
 }
 
-// SAFETY: this is the sole purpose of `SendableGuard`; Send-safety should be ensured by the
-// user, e.g., the `SendableGuard` should always be reset before the task is suspended.
-unsafe impl Send for SendableGuard {}
-unsafe impl Sync for SendableGuard {}
+// SAFETY: this is the sole purpose of `AsyncGuard`; Send-safety should be ensured by the user,
+// e.g., the `AsyncGuard` should always be reset before the task is suspended.
+unsafe impl Send for AsyncGuard {}
+unsafe impl Sync for AsyncGuard {}
 
 impl AsyncWait {
     /// Awaits the [`Lock`] to be available.

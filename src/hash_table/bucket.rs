@@ -10,7 +10,7 @@ use saa::Lock;
 use sdd::{AtomicShared, Epoch, Guard, Ptr, Shared, Tag};
 
 use crate::Equivalent;
-use crate::async_helper::SendableGuard;
+use crate::async_helper::AsyncGuard;
 
 /// [`Bucket`] is a lock-protected fixed-size entry array.
 ///
@@ -812,7 +812,7 @@ impl<K, V, L: LruList, const TYPE: char> Writer<K, V, L, TYPE> {
     #[inline]
     pub(crate) async fn lock_async<'g>(
         bucket: &'g Bucket<K, V, L, TYPE>,
-        sendable_guard: &'g SendableGuard,
+        sendable_guard: &'g AsyncGuard,
     ) -> Option<Writer<K, V, L, TYPE>> {
         if bucket
             .rw_lock
@@ -912,7 +912,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<K, V, L, TYPE> {
     #[inline]
     pub(crate) async fn lock_async(
         bucket: &'g Bucket<K, V, L, TYPE>,
-        sendable_guard: &SendableGuard,
+        sendable_guard: &AsyncGuard,
     ) -> Option<Reader<K, V, L, TYPE>> {
         if bucket
             .rw_lock

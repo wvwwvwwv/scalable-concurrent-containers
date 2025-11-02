@@ -17,7 +17,7 @@ use super::Equivalent;
 use super::hash_table::HashTable;
 use super::hash_table::bucket::{Bucket, EntryPtr, INDEX};
 use super::hash_table::bucket_array::BucketArray;
-use crate::async_helper::SendableGuard;
+use crate::async_helper::AsyncGuard;
 use crate::hash_table::LockedBucket;
 
 /// Scalable concurrent hash index.
@@ -264,10 +264,10 @@ where
     #[inline]
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
-        let sendable_guard = pin!(SendableGuard::default());
-        self.reclaim_memory(sendable_guard.guard());
-        let locked_bucket = self.writer_async(hash, &sendable_guard).await;
-        let prolonged_guard = self.prolonged_guard_ref(sendable_guard.guard());
+        let async_guard = pin!(AsyncGuard::default());
+        self.reclaim_memory(async_guard.guard());
+        let locked_bucket = self.writer_async(hash, &async_guard).await;
+        let prolonged_guard = self.prolonged_guard_ref(async_guard.guard());
         let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
         if entry_ptr.is_valid() {
             Entry::Occupied(OccupiedEntry {
@@ -429,11 +429,11 @@ where
         &self,
         mut pred: P,
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
-        let sendable_guard = pin!(SendableGuard::default());
-        self.reclaim_memory(sendable_guard.guard());
+        let async_guard = pin!(AsyncGuard::default());
+        self.reclaim_memory(async_guard.guard());
         let mut entry = None;
-        self.for_each_writer_async(0, 0, &sendable_guard, |locked_bucket| {
-            let guard = self.prolonged_guard_ref(sendable_guard.guard());
+        self.for_each_writer_async(0, 0, &async_guard, |locked_bucket| {
+            let guard = self.prolonged_guard_ref(async_guard.guard());
             let mut entry_ptr = EntryPtr::new(guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, guard) {
                 let (k, v) = locked_bucket.entry(&entry_ptr);
@@ -515,10 +515,10 @@ where
     #[inline]
     pub async fn insert_async(&self, key: K, val: V) -> Result<(), (K, V)> {
         let hash = self.hash(&key);
-        let sendable_guard = pin!(SendableGuard::default());
-        self.reclaim_memory(sendable_guard.guard());
-        let locked_bucket = self.writer_async(hash, &sendable_guard).await;
-        let guard = sendable_guard.guard();
+        let async_guard = pin!(AsyncGuard::default());
+        self.reclaim_memory(async_guard.guard());
+        let locked_bucket = self.writer_async(hash, &async_guard).await;
+        let guard = async_guard.guard();
         let partial_hash = hash;
         if locked_bucket.search(&key, hash, guard).is_valid() {
             Err((key, val))
@@ -636,15 +636,14 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
-        let sendable_guard = pin!(SendableGuard::default());
-        self.reclaim_memory(sendable_guard.guard());
-        let Some(mut locked_bucket) = self.optional_writer_async(hash, &sendable_guard).await
-        else {
+        let async_guard = pin!(AsyncGuard::default());
+        self.reclaim_memory(async_guard.guard());
+        let Some(mut locked_bucket) = self.optional_writer_async(hash, &async_guard).await else {
             return false;
         };
-        let mut entry_ptr = locked_bucket.search(key, hash, sendable_guard.guard());
+        let mut entry_ptr = locked_bucket.search(key, hash, async_guard.guard());
         if entry_ptr.is_valid() && condition(&mut locked_bucket.entry_mut(&mut entry_ptr).1) {
-            locked_bucket.mark_removed(self, &mut entry_ptr, sendable_guard.guard());
+            locked_bucket.mark_removed(self, &mut entry_ptr, async_guard.guard());
             true
         } else {
             false
@@ -711,10 +710,10 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
-        let sendable_guard = pin!(SendableGuard::default());
-        self.reclaim_memory(sendable_guard.guard());
-        let locked_bucket = self.optional_writer_async(hash, &sendable_guard).await?;
-        let guard = self.prolonged_guard_ref(sendable_guard.guard());
+        let async_guard = pin!(AsyncGuard::default());
+        self.reclaim_memory(async_guard.guard());
+        let locked_bucket = self.optional_writer_async(hash, &async_guard).await?;
+        let guard = self.prolonged_guard_ref(async_guard.guard());
         let entry_ptr = locked_bucket.search(key, hash, guard);
         if entry_ptr.is_valid() {
             return Some(OccupiedEntry {
@@ -884,11 +883,11 @@ where
     /// ```
     #[inline]
     pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
-        let sendable_guard = pin!(SendableGuard::default());
-        self.reclaim_memory(sendable_guard.guard());
+        let async_guard = pin!(AsyncGuard::default());
+        self.reclaim_memory(async_guard.guard());
         let mut result = true;
-        self.for_each_reader_async(&sendable_guard, |reader, data_block| {
-            let guard = sendable_guard.guard();
+        self.for_each_reader_async(&async_guard, |reader, data_block| {
+            let guard = async_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
             while entry_ptr.move_to_next(&reader, guard) {
                 let (k, v) = entry_ptr.get(data_block);
@@ -964,11 +963,11 @@ where
     /// ```
     #[inline]
     pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
-        let sendable_guard = pin!(SendableGuard::default());
-        self.reclaim_memory(sendable_guard.guard());
-        self.for_each_writer_async(0, 0, &sendable_guard, |mut locked_bucket| {
+        let async_guard = pin!(AsyncGuard::default());
+        self.reclaim_memory(async_guard.guard());
+        self.for_each_writer_async(0, 0, &async_guard, |mut locked_bucket| {
             let mut removed = false;
-            let guard = sendable_guard.guard();
+            let guard = async_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, guard) {
                 let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
@@ -1225,8 +1224,9 @@ where
                         .bucket_link()
                         .swap((None, Tag::None), Acquire)
                         .0;
-                    let dropped = unsafe { garbage_bucket_array.drop_in_place() };
-                    debug_assert!(dropped);
+                    // The reference count may be larger than `1` when another thread is pushing a
+                    // garbage bucket array.
+                    let _: bool = unsafe { garbage_bucket_array.drop_in_place() };
                 }
             }
         } else {
@@ -1405,6 +1405,15 @@ where
             ) {
                 Err((Some(passed), actual)) => {
                     bucket_array = passed;
+                    if let Some(prev_garbage_head) = bucket_array
+                        .bucket_link()
+                        .swap((None, Tag::None), Acquire)
+                        .0
+                    {
+                        unsafe {
+                            let _: bool = prev_garbage_head.drop_in_place();
+                        }
+                    }
                     garbage_head_ptr = actual;
                 }
                 _ => break,
@@ -1745,14 +1754,14 @@ where
     pub async fn remove_and_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let hashindex = self.hashindex;
         let mut entry_ptr = self.entry_ptr.clone();
-        let mut sendable_guard = pin!(SendableGuard::default());
+        let mut async_guard = pin!(AsyncGuard::default());
         self.locked_bucket.writer.mark_removed(
             &mut entry_ptr,
-            hashindex.prolonged_guard_ref(sendable_guard.guard()),
+            hashindex.prolonged_guard_ref(async_guard.guard()),
         );
         if let Some(locked_bucket) = self
             .locked_bucket
-            .next_async(hashindex, &mut entry_ptr, &mut sendable_guard)
+            .next_async(hashindex, &mut entry_ptr, &mut async_guard)
             .await
         {
             return Some(OccupiedEntry {
@@ -1838,10 +1847,10 @@ where
     pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let hashindex = self.hashindex;
         let mut entry_ptr = self.entry_ptr.clone();
-        let mut sendable_guard = pin!(SendableGuard::default());
+        let mut async_guard = pin!(AsyncGuard::default());
         if let Some(locked_bucket) = self
             .locked_bucket
-            .next_async(hashindex, &mut entry_ptr, &mut sendable_guard)
+            .next_async(hashindex, &mut entry_ptr, &mut async_guard)
             .await
         {
             return Some(OccupiedEntry {

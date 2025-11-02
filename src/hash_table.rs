@@ -15,7 +15,7 @@ use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
 use super::exit_guard::ExitGuard;
-use crate::async_helper::SendableGuard;
+use crate::async_helper::AsyncGuard;
 use crate::hash_table::bucket::Bucket;
 
 /// `HashTable` defines common functions for hash table implementations.
@@ -296,18 +296,18 @@ where
         key: &Q,
         hash: u64,
         f: F,
-        sendable_guard: &SendableGuard,
+        async_guard: &AsyncGuard,
     ) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
+        while let Some(current_array) = async_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
-                self.incremental_rehash_async(current_array, sendable_guard)
+                self.incremental_rehash_async(current_array, async_guard)
                     .await;
                 if !self
-                    .dedup_bucket_async(current_array, index, sendable_guard)
+                    .dedup_bucket_async(current_array, index, async_guard)
                     .await
                 {
                     continue;
@@ -316,22 +316,25 @@ where
 
             let bucket = current_array.bucket(index);
             if let Some(reader) = Reader::try_lock(bucket) {
+                // The compiler is not efficient enough to eliminate unnecessary await points even
+                // though `try_lock` is called during `lock_async`; it is a manual optimization to
+                // avoid awaiting a future.
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
                     key,
                     hash,
-                    sendable_guard.guard(),
+                    async_guard.guard(),
                 ) {
                     return Some(f(&entry.0, &entry.1));
                 }
                 break;
             }
-            if let Some(reader) = Reader::lock_async(bucket, sendable_guard).await {
+            if let Some(reader) = Reader::lock_async(bucket, async_guard).await {
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
                     key,
                     hash,
-                    sendable_guard.guard(),
+                    async_guard.guard(),
                 ) {
                     return Some(f(&entry.0, &entry.1));
                 }
@@ -382,16 +385,16 @@ where
     async fn writer_async(
         &self,
         hash: u64,
-        sendable_guard: &SendableGuard,
+        async_guard: &AsyncGuard,
     ) -> LockedBucket<K, V, L, TYPE> {
         loop {
-            let current_array = self.get_or_create_bucket_array(sendable_guard.guard());
+            let current_array = self.get_or_create_bucket_array(async_guard.guard());
             let bucket_index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
-                self.incremental_rehash_async(current_array, sendable_guard)
+                self.incremental_rehash_async(current_array, async_guard)
                     .await;
                 if !self
-                    .dedup_bucket_async(current_array, bucket_index, sendable_guard)
+                    .dedup_bucket_async(current_array, bucket_index, async_guard)
                     .await
                 {
                     continue;
@@ -407,11 +410,14 @@ where
                     current_array,
                     bucket_index,
                     bucket.len(),
-                    sendable_guard.guard(),
+                    async_guard.guard(),
                 );
             }
 
             if let Ok(Some(writer)) = Writer::try_lock(bucket) {
+                // The compiler is not efficient enough to eliminate unnecessary await points even
+                // though `try_lock` is called during `lock_async`; it is a manual optimization to
+                // avoid awaiting a future.
                 return LockedBucket {
                     writer,
                     data_block: current_array.data_block(bucket_index),
@@ -419,7 +425,7 @@ where
                     bucket_array: Self::into_non_null(current_array),
                 };
             }
-            if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
+            if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
                 return LockedBucket {
                     writer,
                     data_block: current_array.data_block(bucket_index),
@@ -470,15 +476,15 @@ where
     async fn optional_writer_async(
         &self,
         hash: u64,
-        sendable_guard: &SendableGuard,
+        async_guard: &AsyncGuard,
     ) -> Option<LockedBucket<K, V, L, TYPE>> {
-        while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
+        while let Some(current_array) = async_guard.load(self.bucket_array(), Acquire) {
             let bucket_index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
-                self.incremental_rehash_async(current_array, sendable_guard)
+                self.incremental_rehash_async(current_array, async_guard)
                     .await;
                 if !self
-                    .dedup_bucket_async(current_array, bucket_index, sendable_guard)
+                    .dedup_bucket_async(current_array, bucket_index, async_guard)
                     .await
                 {
                     continue;
@@ -487,6 +493,9 @@ where
 
             let bucket = current_array.bucket(bucket_index);
             if let Ok(Some(writer)) = Writer::try_lock(bucket) {
+                // The compiler is not efficient enough to eliminate unnecessary await points even
+                // though `try_lock` is called during `lock_async`; it is a manual optimization to
+                // avoid awaiting a future.
                 return Some(LockedBucket {
                     writer,
                     data_block: current_array.data_block(bucket_index),
@@ -494,7 +503,7 @@ where
                     bucket_array: Self::into_non_null(current_array),
                 });
             }
-            if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
+            if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
                 return Some(LockedBucket {
                     writer,
                     data_block: current_array.data_block(bucket_index),
@@ -540,13 +549,13 @@ where
     ///
     /// This method stops iterating when the closure returns `false`.
     #[inline]
-    async fn for_each_reader_async<F>(&self, sendable_guard: &SendableGuard, mut f: F)
+    async fn for_each_reader_async<F>(&self, async_guard: &AsyncGuard, mut f: F)
     where
         F: FnMut(Reader<K, V, L, TYPE>, NonNull<DataBlock<K, V, BUCKET_LEN>>) -> bool,
     {
         let mut start_index = 0;
         let mut prev_len = 0;
-        while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
+        while let Some(current_array) = async_guard.load(self.bucket_array(), Acquire) {
             // In case the method is repeating the routine, iterate over entries from the middle of
             // the array.
             start_index = if prev_len == 0 || prev_len == current_array.len() {
@@ -559,10 +568,10 @@ where
             while start_index < current_array.len() {
                 let index = start_index;
                 if current_array.has_old_array() {
-                    self.incremental_rehash_async(current_array, sendable_guard)
+                    self.incremental_rehash_async(current_array, async_guard)
                         .await;
                     if !self
-                        .dedup_bucket_async(current_array, index, sendable_guard)
+                        .dedup_bucket_async(current_array, index, async_guard)
                         .await
                     {
                         // Retry the operation since there is a possibility that the current bucket
@@ -572,8 +581,8 @@ where
                 }
 
                 let bucket = current_array.bucket(index);
-                if let Some(reader) = Reader::lock_async(bucket, sendable_guard).await {
-                    if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+                if let Some(reader) = Reader::lock_async(bucket, async_guard).await {
+                    if !async_guard.check_ref(self.bucket_array(), current_array, Acquire) {
                         // `current_array` is no longer the current one.
                         break;
                     }
@@ -650,13 +659,13 @@ where
         &self,
         mut start_index: usize,
         expected_array_len: usize,
-        sendable_guard: &SendableGuard,
+        async_guard: &AsyncGuard,
         mut f: F,
     ) where
         F: FnMut(LockedBucket<K, V, L, TYPE>) -> bool,
     {
         let mut prev_len = expected_array_len;
-        while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
+        while let Some(current_array) = async_guard.load(self.bucket_array(), Acquire) {
             // In case the method is repeating the routine, iterate over entries from the middle of
             // the array.
             let current_array_len = current_array.len();
@@ -670,10 +679,10 @@ where
             while start_index < current_array_len {
                 let bucket_index = start_index;
                 if current_array.has_old_array() {
-                    self.incremental_rehash_async(current_array, sendable_guard)
+                    self.incremental_rehash_async(current_array, async_guard)
                         .await;
                     if !self
-                        .dedup_bucket_async(current_array, bucket_index, sendable_guard)
+                        .dedup_bucket_async(current_array, bucket_index, async_guard)
                         .await
                     {
                         // Retry the operation since there is a possibility that the current bucket
@@ -683,8 +692,8 @@ where
                 }
 
                 let bucket = current_array.bucket(bucket_index);
-                if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
-                    if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+                if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
+                    if !async_guard.check_ref(self.bucket_array(), current_array, Acquire) {
                         // `current_array` is no longer the current one.
                         break;
                     }
@@ -835,28 +844,28 @@ where
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
         index: usize,
-        sendable_guard: &'g SendableGuard,
+        async_guard: &'g AsyncGuard,
     ) -> bool {
-        if !sendable_guard.check_ref(self.bucket_array(), current_array, Acquire) {
+        if !async_guard.check_ref(self.bucket_array(), current_array, Acquire) {
             // A new bucket array was created in the meantime.
             return false;
         }
 
-        if let Some(old_array) = sendable_guard.load(current_array.bucket_link(), Acquire) {
+        if let Some(old_array) = async_guard.load(current_array.bucket_link(), Acquire) {
             let range = Self::from_index_to_range(current_array.len(), old_array.len(), index);
             for old_index in range.0..range.1 {
                 let bucket = old_array.bucket(old_index);
-                let writer = Writer::lock_async(bucket, sendable_guard).await;
+                let writer = Writer::lock_async(bucket, async_guard).await;
                 if let Some(writer) = writer {
                     self.relocate_bucket_async(
                         current_array,
                         old_array,
                         old_index,
                         writer,
-                        sendable_guard,
+                        async_guard,
                     )
                     .await;
-                } else if !sendable_guard.has_guard() {
+                } else if !async_guard.has_guard() {
                     // The bucket was killed and the guard has been invalidated. Validating the
                     // reference is not sufficient in this case since the current bucket array could
                     // have been replaced with a new one.
@@ -916,12 +925,12 @@ where
         old_array: &'g BucketArray<K, V, L, TYPE>,
         old_index: usize,
         old_writer: Writer<K, V, L, TYPE>,
-        sendable_guard: &'g SendableGuard,
+        async_guard: &'g AsyncGuard,
     ) {
         if old_writer.len() == 0 {
             // Instantiate a guard while the lock is held to ensure that the bucket arrays are not
             // dropped.
-            sendable_guard.guard();
+            async_guard.guard();
             old_writer.kill();
             return;
         }
@@ -931,7 +940,7 @@ where
             Self::from_index_to_range(old_array.len(), current_array.len(), old_index);
         for i in target_index..end_target_index {
             let writer = unsafe {
-                Writer::lock_async(current_array.bucket(i), sendable_guard)
+                Writer::lock_async(current_array.bucket(i), async_guard)
                     .await
                     .unwrap_unchecked()
             };
@@ -940,7 +949,7 @@ where
 
         // It may seem inefficient to reevaluate the same values, but it is beneficial for reducing
         // the `Future` size.
-        let Some(old_array) = current_array.old_array(sendable_guard.guard()).as_ref() else {
+        let Some(old_array) = current_array.old_array(async_guard.guard()).as_ref() else {
             return;
         };
         let (target_index, end_target_index) =
@@ -961,13 +970,13 @@ where
             old_array,
             old_index,
             &old_writer,
-            sendable_guard.guard(),
+            async_guard.guard(),
         );
         drop(unlock);
 
         // Instantiate a guard while the lock is held to ensure that the bucket arrays are not
         // dropped.
-        sendable_guard.guard();
+        async_guard.guard();
         old_writer.kill();
     }
 
@@ -1187,8 +1196,8 @@ where
                 let new = if current <= prev {
                     current - 1
                 } else {
-                    let ref_cnt = current & (BUCKET_LEN - 1);
-                    prev | (ref_cnt - 1)
+                    let refs = current & (BUCKET_LEN - 1);
+                    prev | (refs - 1)
                 };
                 match rehashing_metadata.compare_exchange_weak(current, new, Release, Relaxed) {
                     Ok(_) => break,
@@ -1207,9 +1216,9 @@ where
     async fn incremental_rehash_async<'g>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
-        sendable_guard: &'g SendableGuard,
+        async_guard: &'g AsyncGuard,
     ) {
-        if let Some(old_array) = sendable_guard.load(current_array.bucket_link(), Acquire) {
+        if let Some(old_array) = async_guard.load(current_array.bucket_link(), Acquire) {
             if let Some(current) = Self::start_incremental_rehash(old_array) {
                 let mut rehashing_guard =
                     ExitGuard::new((old_array, current), |(old_array, prev)| {
@@ -1222,14 +1231,14 @@ where
                     rehashing_guard.1..(rehashing_guard.1 + BUCKET_LEN).min(old_array.len())
                 {
                     let old_bucket = rehashing_guard.0.bucket(bucket_index);
-                    let writer = Writer::lock_async(old_bucket, sendable_guard).await;
+                    let writer = Writer::lock_async(old_bucket, async_guard).await;
                     if let Some(writer) = writer {
                         self.relocate_bucket_async(
                             current_array,
                             rehashing_guard.0,
                             bucket_index,
                             writer,
-                            sendable_guard,
+                            async_guard,
                         )
                         .await;
                     }
@@ -1242,7 +1251,7 @@ where
                         .swap((None, Tag::None), Acquire)
                         .0
                     {
-                        self.defer_reclaim(bucket_array, sendable_guard.guard());
+                        self.defer_reclaim(bucket_array, async_guard.guard());
                     }
                 }
                 // `usize::MAX` indicates that the rehashing is complete.
@@ -1645,7 +1654,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         self.try_shrink_or_rebuild(hash_table, guard);
     }
 
-    /// Triees to shrink or rebuild the container.
+    /// Tries to shrink or rebuild the container.
     pub(crate) fn try_shrink_or_rebuild<H, T: HashTable<K, V, H, L, TYPE>>(
         self,
         hash_table: &T,
@@ -1674,12 +1683,12 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         self,
         hash_table: &'h T,
         entry_ptr: &mut EntryPtr<'h, K, V, TYPE>,
-        sendable_guard: &mut Pin<&mut SendableGuard>,
+        async_guard: &mut Pin<&mut AsyncGuard>,
     ) -> Option<LockedBucket<K, V, L, TYPE>>
     where
         H: BuildHasher,
     {
-        let prolonged_guard = hash_table.prolonged_guard_ref(sendable_guard.guard());
+        let prolonged_guard = hash_table.prolonged_guard_ref(async_guard.guard());
         if entry_ptr.move_to_next(&self.writer, prolonged_guard) {
             return Some(self);
         }
@@ -1699,8 +1708,8 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
 
         let mut next_entry = None;
         hash_table
-            .for_each_writer_async(next_index, len, sendable_guard, |locked_bucket| {
-                let guard = hash_table.prolonged_guard_ref(sendable_guard.guard());
+            .for_each_writer_async(next_index, len, async_guard, |locked_bucket| {
+                let guard = hash_table.prolonged_guard_ref(async_guard.guard());
                 *entry_ptr = EntryPtr::new(guard);
                 if entry_ptr.move_to_next(&locked_bucket.writer, guard) {
                     next_entry = Some(locked_bucket);
