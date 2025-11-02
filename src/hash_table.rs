@@ -315,6 +315,17 @@ where
             }
 
             let bucket = current_array.bucket(index);
+            if let Some(reader) = Reader::try_lock(bucket) {
+                if let Some(entry) = reader.search_entry(
+                    current_array.data_block(index),
+                    key,
+                    hash,
+                    sendable_guard.guard(),
+                ) {
+                    return Some(f(&entry.0, &entry.1));
+                }
+                break;
+            }
             if let Some(reader) = Reader::lock_async(bucket, sendable_guard).await {
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
@@ -400,6 +411,14 @@ where
                 );
             }
 
+            if let Ok(Some(writer)) = Writer::try_lock(bucket) {
+                return LockedBucket {
+                    writer,
+                    data_block: current_array.data_block(bucket_index),
+                    bucket_index,
+                    bucket_array: Self::into_non_null(current_array),
+                };
+            }
             if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
                 return LockedBucket {
                     writer,
@@ -467,6 +486,14 @@ where
             }
 
             let bucket = current_array.bucket(bucket_index);
+            if let Ok(Some(writer)) = Writer::try_lock(bucket) {
+                return Some(LockedBucket {
+                    writer,
+                    data_block: current_array.data_block(bucket_index),
+                    bucket_index,
+                    bucket_array: Self::into_non_null(current_array),
+                });
+            }
             if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
                 return Some(LockedBucket {
                     writer,

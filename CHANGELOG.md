@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.3.4
+
+* Minor asynchronous code optimization.
+
 3.3.3
 
 * API update: add `{HashMap, HashCache}::{replace_async, replace_sync}`.

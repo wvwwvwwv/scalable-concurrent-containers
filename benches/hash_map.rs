@@ -7,9 +7,9 @@ use scc::HashMap;
 fn insert_single_async(c: &mut Criterion) {
     c.bench_function("HashMap: insert_single_async", |b| {
         let hashmap: HashMap<u64, u64> = HashMap::default();
+        assert!(hashmap.insert_sync(0, 0).is_ok());
         async fn test(hashmap: &HashMap<u64, u64>) {
-            assert!(hashmap.insert_async(0, 0).await.is_ok());
-            assert!(hashmap.remove_async(&0).await.is_some());
+            assert!(hashmap.insert_async(0, 0).await.is_err());
         }
         b.to_async(FuturesExecutor).iter(|| test(&hashmap));
     });
@@ -18,9 +18,9 @@ fn insert_single_async(c: &mut Criterion) {
 fn insert_single_sync(c: &mut Criterion) {
     c.bench_function("HashMap: insert_single_sync", |b| {
         let hashmap: HashMap<u64, u64> = HashMap::default();
+        assert!(hashmap.insert_sync(0, 0).is_ok());
         fn test(hashmap: &HashMap<u64, u64>) {
-            assert!(hashmap.insert_sync(0, 0).is_ok());
-            assert!(hashmap.remove_sync(&0).is_some());
+            assert!(hashmap.insert_sync(0, 0).is_err());
         }
         b.iter(|| test(&hashmap));
     });
