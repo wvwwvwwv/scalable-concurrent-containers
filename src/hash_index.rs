@@ -1221,7 +1221,7 @@ where
             ) {
                 while let Some(garbage_bucket_array) = garbage_head {
                     garbage_head = garbage_bucket_array
-                        .bucket_link()
+                        .garbage_link()
                         .swap((None, Tag::None), Acquire)
                         .0;
                     // The reference count may be larger than `1` when another thread is pushing a
@@ -1349,7 +1349,7 @@ where
         let mut garbage_head = self.garbage_chain.swap((None, Tag::None), Acquire).0;
         while let Some(garbage_bucket_array) = garbage_head {
             garbage_head = garbage_bucket_array
-                .bucket_link()
+                .garbage_link()
                 .swap((None, Tag::None), Acquire)
                 .0;
             let dropped = unsafe { garbage_bucket_array.drop_in_place() };
@@ -1394,7 +1394,7 @@ where
         let mut garbage_head_ptr = self.garbage_chain.load(Acquire, guard);
         loop {
             bucket_array
-                .bucket_link()
+                .garbage_link()
                 .swap((garbage_head_ptr.get_shared(), Tag::None), Release);
             match self.garbage_chain.compare_exchange(
                 garbage_head_ptr,
@@ -1406,7 +1406,7 @@ where
                 Err((Some(passed), actual)) => {
                     bucket_array = passed;
                     if let Some(prev_garbage_head) = bucket_array
-                        .bucket_link()
+                        .garbage_link()
                         .swap((None, Tag::None), Acquire)
                         .0
                     {
