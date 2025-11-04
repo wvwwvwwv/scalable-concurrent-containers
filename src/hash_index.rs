@@ -1387,32 +1387,19 @@ where
     }
 
     #[inline]
-    fn defer_reclaim(&self, mut bucket_array: Shared<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
+    fn defer_reclaim(&self, bucket_array: Shared<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
         self.reclaim_memory(guard);
         self.garbage_epoch.swap(u8::from(guard.epoch()), Release);
-        let mut garbage_head_ptr = self.garbage_chain.load(Acquire, guard);
-        loop {
-            match self.garbage_chain.compare_exchange(
-                garbage_head_ptr,
-                (Some(bucket_array), Tag::None),
-                AcqRel,
-                Acquire,
-                guard,
-            ) {
-                Err((passed, actual)) => {
-                    bucket_array = passed.unwrap();
-                    garbage_head_ptr = actual;
-                }
-                Ok((prev, bucket_array_ptr)) => {
-                    // The bucket array will be dropped when the epoch enters the next generation.
-                    if let Some(bucket_array) = bucket_array_ptr.as_ref() {
-                        // Connect the previous bucket array head to the new one.
-                        bucket_array.bucket_link().swap((prev, Tag::None), Release);
-                    }
-                    break;
-                }
-            }
-        }
+        let (Some(prev_head), _) = self
+            .garbage_chain
+            .swap((Some(bucket_array.clone()), Tag::None), AcqRel)
+        else {
+            return;
+        };
+        // The bucket array will be dropped when the epoch enters the next generation.
+        bucket_array
+            .bucket_link()
+            .swap((Some(prev_head), Tag::None), Release);
     }
 
     #[inline]
