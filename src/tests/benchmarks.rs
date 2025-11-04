@@ -29,6 +29,7 @@ mod common {
         }
     }
 }
+
 mod sync_benchmarks {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash};

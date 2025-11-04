@@ -1461,7 +1461,7 @@ where
         if !self.bucket_array().update_tag_if(
             Tag::First,
             |ptr| ptr == current_array_ptr,
-            Relaxed,
+            AcqRel,
             Relaxed,
         ) {
             // The bucket array is being replaced with a new one.

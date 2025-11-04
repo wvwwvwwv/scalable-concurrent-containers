@@ -1,6 +1,9 @@
 mod common {
+    use std::hash::{Hash, Hasher};
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
+
+    use crate::Equivalent;
 
     pub struct R(pub &'static AtomicUsize);
     impl R {
@@ -18,6 +21,35 @@ mod common {
     impl Drop for R {
         fn drop(&mut self) {
             self.0.fetch_sub(1, Relaxed);
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct MaybeEq(pub u64, pub u64);
+    impl Eq for MaybeEq {}
+    impl Hash for MaybeEq {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.hash(state);
+        }
+    }
+    impl PartialEq for MaybeEq {
+        fn eq(&self, other: &Self) -> bool {
+            self.0 == other.0
+        }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    pub struct EqTest(pub String, pub usize);
+
+    impl Equivalent<EqTest> for str {
+        fn equivalent(&self, key: &EqTest) -> bool {
+            key.0.eq(self)
+        }
+    }
+
+    impl Hash for EqTest {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.hash(state);
         }
     }
 }
@@ -39,11 +71,11 @@ mod hashmap {
     use proptest::test_runner::TestRunner;
     use tokio::sync::Barrier as AsyncBarrier;
 
-    use super::common::R;
+    use super::common::{EqTest, MaybeEq, R};
+    use crate::HashMap;
     use crate::async_helper::AsyncGuard;
     use crate::hash_map::{self, Entry, ReplaceResult, Reserve};
     use crate::hash_table::bucket::{MAP, Writer};
-    use crate::{Equivalent, HashMap};
 
     static_assertions::assert_eq_size!(Option<Writer<usize, usize, (), MAP>>, usize);
     static_assertions::assert_impl_all!(AsyncGuard: Send, Sync);
@@ -94,35 +126,6 @@ mod hashmap {
     impl PartialEq for Data {
         fn eq(&self, other: &Self) -> bool {
             self.data == other.data
-        }
-    }
-
-    #[derive(Debug, Eq, PartialEq)]
-    struct EqTest(String, usize);
-
-    impl Equivalent<EqTest> for str {
-        fn equivalent(&self, key: &EqTest) -> bool {
-            key.0.eq(self)
-        }
-    }
-
-    impl Hash for EqTest {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state);
-        }
-    }
-
-    #[derive(Debug)]
-    struct MaybeEqual(u64, u64);
-    impl Eq for MaybeEqual {}
-    impl Hash for MaybeEqual {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state);
-        }
-    }
-    impl PartialEq for MaybeEqual {
-        fn eq(&self, other: &Self) -> bool {
-            self.0 == other.0
         }
     }
 
@@ -205,18 +208,16 @@ mod hashmap {
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn replace_async() {
-        let hashmap: HashMap<MaybeEqual, u64> = HashMap::default();
+        let hashmap: HashMap<MaybeEq, u64> = HashMap::default();
         let workload_size = 256;
         for k in 0..workload_size {
-            let ReplaceResult::NotReplaced(v) = hashmap.replace_async(MaybeEqual(k, 0)).await
-            else {
+            let ReplaceResult::NotReplaced(v) = hashmap.replace_async(MaybeEq(k, 0)).await else {
                 unreachable!();
             };
             v.insert_entry(k);
         }
         for k in 0..workload_size {
-            let ReplaceResult::Replaced(o, p) = hashmap.replace_async(MaybeEqual(k, 1)).await
-            else {
+            let ReplaceResult::Replaced(o, p) = hashmap.replace_async(MaybeEq(k, 1)).await else {
                 unreachable!();
             };
             assert_eq!(p.1, 0);
@@ -227,16 +228,16 @@ mod hashmap {
 
     #[test]
     fn replace_sync() {
-        let hashmap: HashMap<MaybeEqual, u64> = HashMap::default();
+        let hashmap: HashMap<MaybeEq, u64> = HashMap::default();
         let workload_size = 256;
         for k in 0..workload_size {
-            let ReplaceResult::NotReplaced(v) = hashmap.replace_sync(MaybeEqual(k, 0)) else {
+            let ReplaceResult::NotReplaced(v) = hashmap.replace_sync(MaybeEq(k, 0)) else {
                 unreachable!();
             };
             v.insert_entry(k);
         }
         for k in 0..workload_size {
-            let ReplaceResult::Replaced(o, p) = hashmap.replace_sync(MaybeEqual(k, 1)) else {
+            let ReplaceResult::Replaced(o, p) = hashmap.replace_sync(MaybeEq(k, 1)) else {
                 unreachable!();
             };
             assert_eq!(p.1, 0);
@@ -1155,7 +1156,6 @@ mod hashmap {
 
 mod hashindex {
     use std::collections::BTreeSet;
-    use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
     use std::rc::Rc;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -1169,9 +1169,9 @@ mod hashindex {
     use sdd::Guard;
     use tokio::sync::Barrier as AsyncBarrier;
 
-    use super::common::R;
+    use super::common::{EqTest, R};
+    use crate::HashIndex;
     use crate::hash_index::{self, Iter};
-    use crate::{Equivalent, HashIndex};
 
     static_assertions::assert_not_impl_any!(HashIndex<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_index::Entry<Rc<String>, Rc<String>>: Send, Sync);
@@ -1179,21 +1179,6 @@ mod hashindex {
     static_assertions::assert_impl_all!(Iter<'static, String, String>: UnwindSafe);
     static_assertions::assert_not_impl_any!(HashIndex<String, *const String>: Send, Sync);
     static_assertions::assert_not_impl_any!(Iter<'static, String, *const String>: Send, Sync);
-
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    struct EqTest(String, usize);
-
-    impl Equivalent<EqTest> for str {
-        fn equivalent(&self, key: &EqTest) -> bool {
-            key.0.eq(self)
-        }
-    }
-
-    impl Hash for EqTest {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state);
-        }
-    }
 
     #[test]
     fn equivalent() {
@@ -1915,30 +1900,15 @@ mod hashindex {
 }
 
 mod hashset {
-    use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
     use std::rc::Rc;
 
-    use crate::{Equivalent, HashSet};
+    use super::common::EqTest;
+    use crate::HashSet;
 
     static_assertions::assert_not_impl_any!(HashSet<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashSet<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_any!(HashSet<*const String>: Send, Sync);
-
-    #[derive(Debug, Eq, PartialEq)]
-    struct EqTest(String, usize);
-
-    impl Equivalent<EqTest> for str {
-        fn equivalent(&self, key: &EqTest) -> bool {
-            key.0.eq(self)
-        }
-    }
-
-    impl Hash for EqTest {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state);
-        }
-    }
 
     #[test]
     fn equivalent() {
@@ -1982,7 +1952,6 @@ mod hashset {
 
 mod hashcache {
     use futures::future::join_all;
-    use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
     use std::rc::Rc;
     use std::sync::Arc;
@@ -1992,9 +1961,9 @@ mod hashcache {
 
     use proptest::prelude::*;
 
-    use super::common::R;
+    use super::common::{EqTest, MaybeEq, R};
+    use crate::HashCache;
     use crate::hash_cache::{self, ReplaceResult};
-    use crate::{Equivalent, HashCache};
 
     static_assertions::assert_not_impl_any!(HashCache<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_cache::Entry<Rc<String>, Rc<String>>: Send, Sync);
@@ -2004,35 +1973,6 @@ mod hashcache {
     static_assertions::assert_not_impl_any!(hash_cache::OccupiedEntry<String, *const String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(hash_cache::VacantEntry<String, String>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_cache::VacantEntry<String, *const String>: Send, Sync, UnwindSafe);
-
-    #[derive(Debug, Eq, PartialEq)]
-    struct EqTest(String, usize);
-
-    impl Equivalent<EqTest> for str {
-        fn equivalent(&self, key: &EqTest) -> bool {
-            key.0.eq(self)
-        }
-    }
-
-    impl Hash for EqTest {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state);
-        }
-    }
-
-    #[derive(Debug)]
-    struct MaybeEqual(u64, u64);
-    impl Eq for MaybeEqual {}
-    impl Hash for MaybeEqual {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state);
-        }
-    }
-    impl PartialEq for MaybeEqual {
-        fn eq(&self, other: &Self) -> bool {
-            self.0 == other.0
-        }
-    }
 
     #[test]
     fn equivalent() {
@@ -2074,18 +2014,16 @@ mod hashcache {
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn replace_async() {
-        let hashcache: HashCache<MaybeEqual, u64> = HashCache::default();
+        let hashcache: HashCache<MaybeEq, u64> = HashCache::default();
         let workload_size = 256;
         for k in 0..workload_size {
-            let ReplaceResult::NotReplaced(v) = hashcache.replace_async(MaybeEqual(k, 0)).await
-            else {
+            let ReplaceResult::NotReplaced(v) = hashcache.replace_async(MaybeEq(k, 0)).await else {
                 unreachable!();
             };
             v.put_entry(k);
         }
         for k in 0..workload_size {
-            let ReplaceResult::Replaced(o, p) = hashcache.replace_async(MaybeEqual(k, 1)).await
-            else {
+            let ReplaceResult::Replaced(o, p) = hashcache.replace_async(MaybeEq(k, 1)).await else {
                 continue;
             };
             assert_eq!(p.1, 0);
@@ -2096,16 +2034,16 @@ mod hashcache {
 
     #[test]
     fn replace_sync() {
-        let hashcache: HashCache<MaybeEqual, u64> = HashCache::default();
+        let hashcache: HashCache<MaybeEq, u64> = HashCache::default();
         let workload_size = 256;
         for k in 0..workload_size {
-            let ReplaceResult::NotReplaced(v) = hashcache.replace_sync(MaybeEqual(k, 0)) else {
+            let ReplaceResult::NotReplaced(v) = hashcache.replace_sync(MaybeEq(k, 0)) else {
                 unreachable!();
             };
             v.put_entry(k);
         }
         for k in 0..workload_size {
-            let ReplaceResult::Replaced(o, p) = hashcache.replace_sync(MaybeEqual(k, 1)) else {
+            let ReplaceResult::Replaced(o, p) = hashcache.replace_sync(MaybeEq(k, 1)) else {
                 continue;
             };
             assert_eq!(p.1, 0);
