@@ -1,3 +1,27 @@
+mod common {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    pub struct R(pub &'static AtomicUsize);
+    impl R {
+        pub fn new(cnt: &'static AtomicUsize) -> R {
+            cnt.fetch_add(1, Relaxed);
+            R(cnt)
+        }
+    }
+    impl Clone for R {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Relaxed);
+            R(self.0)
+        }
+    }
+    impl Drop for R {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Relaxed);
+        }
+    }
+}
+
 mod hashmap {
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
@@ -15,6 +39,7 @@ mod hashmap {
     use proptest::test_runner::TestRunner;
     use tokio::sync::Barrier as AsyncBarrier;
 
+    use super::common::R;
     use crate::async_helper::AsyncGuard;
     use crate::hash_map::{self, Entry, ReplaceResult, Reserve};
     use crate::hash_table::bucket::{MAP, Writer};
@@ -33,25 +58,6 @@ mod hashmap {
     static_assertions::assert_not_impl_any!(hash_map::OccupiedEntry<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
     static_assertions::assert_impl_all!(hash_map::VacantEntry<String, String>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_map::VacantEntry<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
-
-    struct R(&'static AtomicUsize);
-    impl R {
-        fn new(cnt: &'static AtomicUsize) -> R {
-            cnt.fetch_add(1, Relaxed);
-            R(cnt)
-        }
-    }
-    impl Clone for R {
-        fn clone(&self) -> Self {
-            self.0.fetch_add(1, Relaxed);
-            R(self.0)
-        }
-    }
-    impl Drop for R {
-        fn drop(&mut self) {
-            self.0.fetch_sub(1, Relaxed);
-        }
-    }
 
     struct Data {
         data: usize,
@@ -1163,6 +1169,7 @@ mod hashindex {
     use sdd::Guard;
     use tokio::sync::Barrier as AsyncBarrier;
 
+    use super::common::R;
     use crate::hash_index::{self, Iter};
     use crate::{Equivalent, HashIndex};
 
@@ -1172,25 +1179,6 @@ mod hashindex {
     static_assertions::assert_impl_all!(Iter<'static, String, String>: UnwindSafe);
     static_assertions::assert_not_impl_any!(HashIndex<String, *const String>: Send, Sync);
     static_assertions::assert_not_impl_any!(Iter<'static, String, *const String>: Send, Sync);
-
-    struct R(&'static AtomicUsize);
-    impl R {
-        fn new(cnt: &'static AtomicUsize) -> R {
-            cnt.fetch_add(1, Relaxed);
-            R(cnt)
-        }
-    }
-    impl Clone for R {
-        fn clone(&self) -> Self {
-            self.0.fetch_add(1, Relaxed);
-            R(self.0)
-        }
-    }
-    impl Drop for R {
-        fn drop(&mut self) {
-            self.0.fetch_sub(1, Relaxed);
-        }
-    }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct EqTest(String, usize);
@@ -2004,6 +1992,7 @@ mod hashcache {
 
     use proptest::prelude::*;
 
+    use super::common::R;
     use crate::hash_cache::{self, ReplaceResult};
     use crate::{Equivalent, HashCache};
 
@@ -2015,25 +2004,6 @@ mod hashcache {
     static_assertions::assert_not_impl_any!(hash_cache::OccupiedEntry<String, *const String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(hash_cache::VacantEntry<String, String>: Send, Sync);
     static_assertions::assert_not_impl_any!(hash_cache::VacantEntry<String, *const String>: Send, Sync, UnwindSafe);
-
-    struct R(&'static AtomicUsize);
-    impl R {
-        fn new(cnt: &'static AtomicUsize) -> R {
-            cnt.fetch_add(1, Relaxed);
-            R(cnt)
-        }
-    }
-    impl Clone for R {
-        fn clone(&self) -> Self {
-            self.0.fetch_add(1, Relaxed);
-            R(self.0)
-        }
-    }
-    impl Drop for R {
-        fn drop(&mut self) {
-            self.0.fetch_sub(1, Relaxed);
-        }
-    }
 
     #[derive(Debug, Eq, PartialEq)]
     struct EqTest(String, usize);
@@ -2417,6 +2387,7 @@ mod treeindex {
     use tokio::sync::Barrier as AsyncBarrier;
     use tokio::task;
 
+    use super::common::R;
     use crate::tree_index::{Iter, Range};
     use crate::{Comparable, Equivalent, TreeIndex};
 
@@ -2427,25 +2398,6 @@ mod treeindex {
     static_assertions::assert_not_impl_any!(TreeIndex<String, *const String>: Send, Sync);
     static_assertions::assert_not_impl_any!(Iter<'static, 'static, String, *const String>: Send, Sync);
     static_assertions::assert_not_impl_any!(Range<'static, 'static, String, *const String, String, RangeInclusive<String>>: Send, Sync);
-
-    struct R(&'static AtomicUsize);
-    impl R {
-        fn new(cnt: &'static AtomicUsize) -> R {
-            cnt.fetch_add(1, Relaxed);
-            R(cnt)
-        }
-    }
-    impl Clone for R {
-        fn clone(&self) -> Self {
-            self.0.fetch_add(1, Relaxed);
-            R(self.0)
-        }
-    }
-    impl Drop for R {
-        fn drop(&mut self) {
-            self.0.fetch_sub(1, Relaxed);
-        }
-    }
 
     #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
     struct CmpTest(String, usize);
@@ -3257,6 +3209,7 @@ mod bag {
     use tokio::sync::Barrier as AsyncBarrier;
     use tokio::task;
 
+    use super::common::R;
     use crate::Bag;
     use crate::bag::IterMut;
     use sdd::Guard;
@@ -3266,25 +3219,6 @@ mod bag {
     static_assertions::assert_impl_all!(IterMut<'static, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_any!(Bag<*const String>: Send, Sync);
     static_assertions::assert_not_impl_any!(IterMut<'static, *const String>: Send, Sync);
-
-    struct R(&'static AtomicUsize);
-    impl R {
-        fn new(cnt: &'static AtomicUsize) -> R {
-            cnt.fetch_add(1, Relaxed);
-            R(cnt)
-        }
-    }
-    impl Clone for R {
-        fn clone(&self) -> Self {
-            self.0.fetch_add(1, Relaxed);
-            R(self.0)
-        }
-    }
-    impl Drop for R {
-        fn drop(&mut self) {
-            self.0.fetch_sub(1, Relaxed);
-        }
-    }
 
     #[test]
     fn reclaim() {

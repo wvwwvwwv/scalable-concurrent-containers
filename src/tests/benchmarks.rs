@@ -1,29 +1,16 @@
 #![allow(clippy::inline_always)]
 
-mod sync_benchmarks {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hash};
-    use std::ptr::addr_of;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::{Arc, Barrier};
-    use std::thread;
-    use std::time::{Duration, Instant};
-
-    use sdd::Guard;
-
-    use crate::{HashIndex, HashMap, TreeIndex};
-
-    #[derive(Clone, Copy)]
-    struct Workload {
-        size: usize,
-        insert_local: usize,
-        insert_remote: usize,
-        scan: usize,
-        read_local: usize,
-        read_remote: usize,
-        remove_local: usize,
-        remove_remote: usize,
+mod common {
+    #[derive(Clone, Copy, Debug)]
+    pub struct Workload {
+        pub size: usize,
+        pub insert_local: usize,
+        pub insert_remote: usize,
+        pub scan: usize,
+        pub read_local: usize,
+        pub read_remote: usize,
+        pub remove_local: usize,
+        pub remove_remote: usize,
     }
 
     impl Workload {
@@ -41,6 +28,21 @@ mod sync_benchmarks {
             self.insert_remote > 0 || self.read_remote > 0 || self.remove_remote > 0
         }
     }
+}
+mod sync_benchmarks {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hash};
+    use std::ptr::addr_of;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use sdd::Guard;
+
+    use super::common::Workload;
+    use crate::{HashIndex, HashMap, TreeIndex};
 
     trait BenchmarkOperation<
         K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
@@ -664,35 +666,8 @@ mod async_benchmarks {
     use sdd::Guard;
     use tokio::sync::Barrier;
 
+    use super::common::Workload;
     use crate::{HashIndex, HashMap, TreeIndex};
-
-    #[derive(Clone, Copy)]
-    struct Workload {
-        size: usize,
-        insert_local: usize,
-        insert_remote: usize,
-        scan: usize,
-        read_local: usize,
-        read_remote: usize,
-        remove_local: usize,
-        remove_remote: usize,
-    }
-
-    impl Workload {
-        pub fn max_per_op_size(&self) -> usize {
-            self.insert_local.max(
-                self.insert_remote.max(
-                    self.read_local.max(
-                        self.read_remote
-                            .max(self.remove_local.max(self.remove_remote)),
-                    ),
-                ),
-            )
-        }
-        pub fn has_remote_op(&self) -> bool {
-            self.insert_remote > 0 || self.read_remote > 0 || self.remove_remote > 0
-        }
-    }
 
     async fn hashmap_perform(
         num_tasks: usize,
