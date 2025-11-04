@@ -16,10 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Debug
-        run: RUST_BACKTRACE=1 cargo test;
+        run: RUST_BACKTRACE=1 cargo test -- --nocapture;
           RUST_BACKTRACE=1 cargo test -p examples
       - name: Release
-        run: RUST_BACKTRACE=1 cargo test --release;
+        run: RUST_BACKTRACE=1 cargo test --release -- --nocapture;
           RUST_BACKTRACE=1 cargo test --release -p examples
   check-basic-x86:
     runs-on: ubuntu-latest
@@ -30,11 +30,12 @@ jobs:
         run: sudo apt-get install gcc-multilib;
           rustup target add i686-unknown-linux-gnu
       - name: Debug
-        run: RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu;
+        run:
+          RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu -- --nocapture;
           RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu -p examples
       - name: Release
         run:
-          RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release;
+          RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release -- --nocapture;
           RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release -p examples
   check-basic-aarch64:
     runs-on: macos-latest
@@ -42,11 +43,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Debug
-        run: RUST_BACKTRACE=1 cargo test;
+        run: RUST_BACKTRACE=1 cargo test -- --nocapture;
           RUST_BACKTRACE=1 cargo test -p examples;
           RUST_BACKTRACE=1 cargo test -p extended_tests
       - name: Release
-        run: RUST_BACKTRACE=1 cargo test --release;
+        run: RUST_BACKTRACE=1 cargo test --release -- --nocapture;
           RUST_BACKTRACE=1 cargo test --release -p examples
   check-extended:
     runs-on: ubuntu-latest

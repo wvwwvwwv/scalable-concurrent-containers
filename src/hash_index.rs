@@ -1221,7 +1221,7 @@ where
             ) {
                 while let Some(garbage_bucket_array) = garbage_head {
                     garbage_head = garbage_bucket_array
-                        .bucket_link()
+                        .garbage_link()
                         .swap((None, Tag::None), Acquire)
                         .0;
                     let dropped = unsafe { garbage_bucket_array.drop_in_place() };
@@ -1348,7 +1348,7 @@ where
         let mut garbage_head = self.garbage_chain.swap((None, Tag::None), Acquire).0;
         while let Some(garbage_bucket_array) = garbage_head {
             garbage_head = garbage_bucket_array
-                .bucket_link()
+                .garbage_link()
                 .swap((None, Tag::None), Acquire)
                 .0;
             let dropped = unsafe { garbage_bucket_array.drop_in_place() };
@@ -1398,7 +1398,7 @@ where
         };
         // The bucket array will be dropped when the epoch enters the next generation.
         bucket_array
-            .bucket_link()
+            .garbage_link()
             .swap((Some(prev_head), Tag::None), Release);
     }
 

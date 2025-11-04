@@ -1,5 +1,4 @@
 #![allow(clippy::inline_always)]
-#![allow(clippy::needless_pass_by_value)]
 
 mod sync_benchmarks {
     use std::collections::hash_map::RandomState;
@@ -15,7 +14,7 @@ mod sync_benchmarks {
 
     use crate::{HashIndex, HashMap, TreeIndex};
 
-    #[derive(Clone)]
+    #[derive(Clone, Copy)]
     struct Workload {
         size: usize,
         insert_local: usize,
@@ -166,27 +165,26 @@ mod sync_benchmarks {
     >(
         num_threads: usize,
         start_index: usize,
-        container: Arc<C>,
+        container: &Arc<C>,
         workload: Workload,
     ) -> (Duration, usize) {
-        for _ in 0..1024 {
-            drop(Guard::new());
+        for _ in 0..64 {
+            Guard::new().accelerate();
         }
         let barrier = Arc::new(Barrier::new(num_threads + 1));
         let total_num_operations = Arc::new(AtomicUsize::new(0));
         let mut thread_handles = Vec::with_capacity(num_threads);
         for thread_id in 0..num_threads {
-            let container_copied = container.clone();
-            let barrier_copied = barrier.clone();
-            let total_num_operations_copied = total_num_operations.clone();
-            let workload_copied = workload.clone();
+            let container = container.clone();
+            let barrier = barrier.clone();
+            let total_num_operations = total_num_operations.clone();
             thread_handles.push(thread::spawn(move || {
                 let mut num_operations = 0;
-                let per_op_workload_size = workload_copied.max_per_op_size();
-                let per_thread_workload_size = workload_copied.size * per_op_workload_size;
-                barrier_copied.wait();
-                for _ in 0..workload_copied.scan {
-                    num_operations += container_copied.scan_test();
+                let per_op_workload_size = workload.max_per_op_size();
+                let per_thread_workload_size = workload.size * per_op_workload_size;
+                barrier.wait();
+                for _ in 0..workload.scan {
+                    num_operations += container.scan_test();
                 }
                 for i in 0..per_thread_workload_size {
                     let remote_thread_id = if num_threads < 2 {
@@ -195,61 +193,60 @@ mod sync_benchmarks {
                         (thread_id + 1 + i % (num_threads - 1)) % num_threads
                     };
                     assert!(num_threads < 2 || thread_id != remote_thread_id);
-                    for j in 0..workload_copied.insert_local {
+                    for j in 0..workload.insert_local {
                         let local_index = thread_id * per_thread_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result =
-                            container_copied.insert_test(K::convert(local_index), V::convert(i));
-                        assert!(result || workload_copied.has_remote_op());
+                        let result = container.insert_test(K::convert(local_index), V::convert(i));
+                        assert!(result || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_copied.insert_remote {
+                    for j in 0..workload.insert_remote {
                         let remote_index = remote_thread_id * per_thread_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        container_copied.insert_test(K::convert(remote_index), V::convert(i));
+                        container.insert_test(K::convert(remote_index), V::convert(i));
                         num_operations += 1;
                     }
-                    for j in 0..workload_copied.read_local {
+                    for j in 0..workload.read_local {
                         let local_index = thread_id * per_thread_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = container_copied.read_test(&K::convert(local_index));
-                        assert!(result || workload_copied.has_remote_op());
+                        let result = container.read_test(&K::convert(local_index));
+                        assert!(result || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_copied.read_remote {
+                    for j in 0..workload.read_remote {
                         let remote_index = remote_thread_id * per_thread_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        container_copied.read_test(&K::convert(remote_index));
+                        container.read_test(&K::convert(remote_index));
                         num_operations += 1;
                     }
-                    for j in 0..workload_copied.remove_local {
+                    for j in 0..workload.remove_local {
                         let local_index = thread_id * per_thread_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = container_copied.remove_test(&K::convert(local_index));
-                        assert!(result || workload_copied.has_remote_op());
+                        let result = container.remove_test(&K::convert(local_index));
+                        assert!(result || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_copied.remove_remote {
+                    for j in 0..workload.remove_remote {
                         let remote_index = remote_thread_id * per_thread_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        container_copied.remove_test(&K::convert(remote_index));
+                        container.remove_test(&K::convert(remote_index));
                         num_operations += 1;
                     }
                 }
-                barrier_copied.wait();
-                total_num_operations_copied.fetch_add(num_operations, Relaxed);
+                barrier.wait();
+                total_num_operations.fetch_add(num_operations, Relaxed);
             }));
         }
         barrier.wait();
@@ -284,8 +281,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), insert.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, insert);
             println!("hashmap-insert-local: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), workload_size * num_threads);
 
@@ -300,8 +296,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), scan.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, scan);
             println!("hashmap-scan: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 3. read-local
@@ -315,8 +310,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), read.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, read);
             println!("hashmap-read-local: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 4. remove-local
@@ -330,8 +324,7 @@ mod sync_benchmarks {
                 remove_local: 1,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), remove.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, remove);
             println!("hashmap-remove-local: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), 0);
 
@@ -346,8 +339,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), insert.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, insert);
             println!(
                 "hashmap-insert-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
@@ -364,12 +356,8 @@ mod sync_benchmarks {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) = perform(
-                num_threads,
-                workload_size * num_threads,
-                hashmap.clone(),
-                mixed.clone(),
-            );
+            let (duration, total_num_operations) =
+                perform(num_threads, workload_size * num_threads, &hashmap, mixed);
             println!("hashmap-mixed: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), workload_size * num_threads);
 
@@ -384,8 +372,7 @@ mod sync_benchmarks {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), remove.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, remove);
             println!(
                 "hashmap-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
@@ -414,8 +401,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashindex.clone(), insert.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, insert);
             println!("hashindex-insert-local: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), workload_size * num_threads);
 
@@ -430,8 +416,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashindex.clone(), scan.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, scan);
             println!("hashindex-scan: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 3. read-local
@@ -445,8 +430,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashindex.clone(), read.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, read);
             println!("hashindex-read-local: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 4. remove-local
@@ -460,8 +444,7 @@ mod sync_benchmarks {
                 remove_local: 1,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashindex.clone(), remove.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, remove);
             println!("hashindex-remove-local: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), 0);
 
@@ -476,8 +459,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashindex.clone(), insert.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, insert);
             println!(
                 "hashindex-insert-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
@@ -494,12 +476,8 @@ mod sync_benchmarks {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) = perform(
-                num_threads,
-                workload_size * num_threads,
-                hashindex.clone(),
-                mixed.clone(),
-            );
+            let (duration, total_num_operations) =
+                perform(num_threads, workload_size * num_threads, &hashindex, mixed);
             println!("hashindex-mixed: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), workload_size * num_threads);
 
@@ -514,8 +492,7 @@ mod sync_benchmarks {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, hashindex.clone(), remove.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, remove);
             println!(
                 "hashindex-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
@@ -542,8 +519,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, treeindex.clone(), insert.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, insert);
             assert_eq!(treeindex.len(), total_num_operations);
             println!(
                 "treeindex-insert-local: {}, {:?}, {}, depth = {}",
@@ -564,8 +540,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, treeindex.clone(), scan.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, scan);
             println!("treeindex-scan: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 3. read-local
@@ -579,8 +554,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, treeindex.clone(), read.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, read);
             println!("treeindex-read-local: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 4. remove-local
@@ -594,8 +568,7 @@ mod sync_benchmarks {
                 remove_local: 1,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, treeindex.clone(), remove.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, remove);
             println!("treeindex-remove-local: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(treeindex.len(), 0);
 
@@ -610,8 +583,7 @@ mod sync_benchmarks {
                 remove_local: 0,
                 remove_remote: 0,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, treeindex.clone(), insert.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, insert);
             assert_eq!(treeindex.len(), total_num_operations / 2);
             println!(
                 "treeindex-insert-local-remote: {}, {:?}, {}, depth = {}",
@@ -632,12 +604,8 @@ mod sync_benchmarks {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) = perform(
-                num_threads,
-                treeindex.len(),
-                treeindex.clone(),
-                mixed.clone(),
-            );
+            let (duration, total_num_operations) =
+                perform(num_threads, treeindex.len(), &treeindex, mixed);
             println!("treeindex-mixed: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 7. remove-local-remote
@@ -651,8 +619,7 @@ mod sync_benchmarks {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, 0, treeindex.clone(), remove.clone());
+            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, remove);
             println!(
                 "treeindex-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
@@ -662,9 +629,9 @@ mod sync_benchmarks {
     #[cfg_attr(miri, ignore)]
     #[test]
     fn benchmarks_sync() {
-        hashmap_benchmark::<usize>(65536, vec![1, 2, 4]);
-        hashindex_benchmark::<usize>(65536, vec![1, 2, 4]);
-        treeindex_benchmark::<usize>(65536, vec![1, 2, 4]);
+        hashmap_benchmark::<usize>(65536, vec![4, 8]);
+        hashindex_benchmark::<usize>(65536, vec![4, 8]);
+        treeindex_benchmark::<usize>(65536, vec![4, 8]);
     }
 
     #[ignore = "too long"]
@@ -699,7 +666,7 @@ mod async_benchmarks {
 
     use crate::{HashIndex, HashMap, TreeIndex};
 
-    #[derive(Clone)]
+    #[derive(Clone, Copy)]
     struct Workload {
         size: usize,
         insert_local: usize,
@@ -730,24 +697,23 @@ mod async_benchmarks {
     async fn hashmap_perform(
         num_tasks: usize,
         start_index: usize,
-        hashmap: Arc<HashMap<usize, usize, RandomState>>,
+        hashmap: &Arc<HashMap<usize, usize, RandomState>>,
         workload: Workload,
     ) -> (Duration, usize) {
         let total_num_operations = Arc::new(AtomicUsize::new(0));
         let mut task_handles = Vec::with_capacity(num_tasks);
         let barrier = Arc::new(Barrier::new(num_tasks + 1));
         for task_id in 0..num_tasks {
-            let barrier_clone = barrier.clone();
-            let hashmap_clone = hashmap.clone();
-            let workload_clone = Arc::new(workload.clone());
-            let total_num_operations_clone = total_num_operations.clone();
+            let barrier = barrier.clone();
+            let hashmap = hashmap.clone();
+            let total_num_operations = total_num_operations.clone();
             task_handles.push(tokio::task::spawn(async move {
                 let mut num_operations = 0;
-                let per_op_workload_size = workload_clone.max_per_op_size();
-                let per_task_workload_size = workload_clone.size * per_op_workload_size;
-                barrier_clone.wait().await;
-                for _ in 0..workload_clone.scan {
-                    hashmap_clone
+                let per_op_workload_size = workload.max_per_op_size();
+                let per_task_workload_size = workload.size * per_op_workload_size;
+                barrier.wait().await;
+                for _ in 0..workload.scan {
+                    hashmap
                         .retain_async(|_, _| {
                             num_operations += 1;
                             true
@@ -761,60 +727,60 @@ mod async_benchmarks {
                         (task_id + 1 + i % (num_tasks - 1)) % num_tasks
                     };
                     assert!(num_tasks < 2 || task_id != remote_task_id);
-                    for j in 0..workload_clone.insert_local {
+                    for j in 0..workload.insert_local {
                         let local_index = task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = hashmap_clone.insert_async(local_index, i).await;
-                        assert!(result.is_ok() || workload_clone.has_remote_op());
+                        let result = hashmap.insert_async(local_index, i).await;
+                        assert!(result.is_ok() || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.insert_remote {
+                    for j in 0..workload.insert_remote {
                         let remote_index = remote_task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = hashmap_clone.insert_async(remote_index, i).await;
+                        let _result = hashmap.insert_async(remote_index, i).await;
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.read_local {
+                    for j in 0..workload.read_local {
                         let local_index = task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = hashmap_clone.read_async(&local_index, |_, _| ()).await;
-                        assert!(result.is_some() || workload_clone.has_remote_op());
+                        let result = hashmap.read_async(&local_index, |_, _| ()).await;
+                        assert!(result.is_some() || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.read_remote {
+                    for j in 0..workload.read_remote {
                         let remote_index = remote_task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = hashmap_clone.read_async(&remote_index, |_, _| ()).await;
+                        let _result = hashmap.read_async(&remote_index, |_, _| ()).await;
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.remove_local {
+                    for j in 0..workload.remove_local {
                         let local_index = task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = hashmap_clone.remove_async(&local_index).await;
-                        assert!(result.is_some() || workload_clone.has_remote_op());
+                        let result = hashmap.remove_async(&local_index).await;
+                        assert!(result.is_some() || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.remove_remote {
+                    for j in 0..workload.remove_remote {
                         let remote_index = remote_task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = hashmap_clone.remove_async(&remote_index).await;
+                        let _result = hashmap.remove_async(&remote_index).await;
                         num_operations += 1;
                     }
                 }
-                barrier_clone.wait().await;
-                total_num_operations_clone.fetch_add(num_operations, Relaxed);
+                barrier.wait().await;
+                total_num_operations.fetch_add(num_operations, Relaxed);
             }));
         }
 
@@ -850,7 +816,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                hashmap_perform(num_tasks, 0, hashmap.clone(), insert.clone()).await;
+                hashmap_perform(num_tasks, 0, &hashmap, insert).await;
             println!("hashmap-insert-local: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), workload_size * num_tasks);
 
@@ -866,7 +832,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                hashmap_perform(num_tasks, 0, hashmap.clone(), scan.clone()).await;
+                hashmap_perform(num_tasks, 0, &hashmap, scan).await;
             println!("hashmap-scan: {num_tasks}, {duration:?}, {total_num_operations}");
 
             // 3. read-local
@@ -881,7 +847,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                hashmap_perform(num_tasks, 0, hashmap.clone(), read.clone()).await;
+                hashmap_perform(num_tasks, 0, &hashmap, read).await;
             println!("hashmap-read-local: {num_tasks}, {duration:?}, {total_num_operations}");
 
             // 4. remove-local
@@ -896,7 +862,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                hashmap_perform(num_tasks, 0, hashmap.clone(), remove.clone()).await;
+                hashmap_perform(num_tasks, 0, &hashmap, remove).await;
             println!("hashmap-remove-local: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), 0);
 
@@ -912,7 +878,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                hashmap_perform(num_tasks, 0, hashmap.clone(), insert.clone()).await;
+                hashmap_perform(num_tasks, 0, &hashmap, insert).await;
             println!(
                 "hashmap-insert-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
             );
@@ -929,13 +895,8 @@ mod async_benchmarks {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) = hashmap_perform(
-                num_tasks,
-                workload_size * num_tasks,
-                hashmap.clone(),
-                mixed.clone(),
-            )
-            .await;
+            let (duration, total_num_operations) =
+                hashmap_perform(num_tasks, workload_size * num_tasks, &hashmap, mixed).await;
             println!("hashmap-mixed: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), workload_size * num_tasks);
 
@@ -951,7 +912,7 @@ mod async_benchmarks {
                 remove_remote: 1,
             };
             let (duration, total_num_operations) =
-                hashmap_perform(num_tasks, 0, hashmap.clone(), remove.clone()).await;
+                hashmap_perform(num_tasks, 0, &hashmap, remove).await;
             println!(
                 "hashmap-remove-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
             );
@@ -962,24 +923,23 @@ mod async_benchmarks {
     async fn hashindex_perform(
         num_tasks: usize,
         start_index: usize,
-        hashindex: Arc<HashIndex<usize, usize, RandomState>>,
+        hashindex: &Arc<HashIndex<usize, usize, RandomState>>,
         workload: Workload,
     ) -> (Duration, usize) {
         let total_num_operations = Arc::new(AtomicUsize::new(0));
         let mut task_handles = Vec::with_capacity(num_tasks);
         let barrier = Arc::new(Barrier::new(num_tasks + 1));
         for task_id in 0..num_tasks {
-            let barrier_clone = barrier.clone();
-            let hashindex_clone = hashindex.clone();
-            let workload_clone = Arc::new(workload.clone());
-            let total_num_operations_clone = total_num_operations.clone();
+            let barrier = barrier.clone();
+            let hashindex = hashindex.clone();
+            let total_num_operations = total_num_operations.clone();
             task_handles.push(tokio::task::spawn(async move {
                 let mut num_operations = 0;
-                let per_op_workload_size = workload_clone.max_per_op_size();
-                let per_task_workload_size = workload_clone.size * per_op_workload_size;
-                barrier_clone.wait().await;
-                for _ in 0..workload_clone.scan {
-                    hashindex_clone.iter(&Guard::new()).for_each(|(_, _)| {
+                let per_op_workload_size = workload.max_per_op_size();
+                let per_task_workload_size = workload.size * per_op_workload_size;
+                barrier.wait().await;
+                for _ in 0..workload.scan {
+                    hashindex.iter(&Guard::new()).for_each(|(_, _)| {
                         num_operations += 1;
                     });
                 }
@@ -990,60 +950,60 @@ mod async_benchmarks {
                         (task_id + 1 + i % (num_tasks - 1)) % num_tasks
                     };
                     assert!(num_tasks < 2 || task_id != remote_task_id);
-                    for j in 0..workload_clone.insert_local {
+                    for j in 0..workload.insert_local {
                         let local_index = task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = hashindex_clone.insert_async(local_index, i).await;
-                        assert!(result.is_ok() || workload_clone.has_remote_op());
+                        let result = hashindex.insert_async(local_index, i).await;
+                        assert!(result.is_ok() || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.insert_remote {
+                    for j in 0..workload.insert_remote {
                         let remote_index = remote_task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = hashindex_clone.insert_async(remote_index, i).await;
+                        let _result = hashindex.insert_async(remote_index, i).await;
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.read_local {
+                    for j in 0..workload.read_local {
                         let local_index = task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = hashindex_clone.peek_with(&local_index, |_, _| ());
-                        assert!(result.is_some() || workload_clone.has_remote_op());
+                        let result = hashindex.peek_with(&local_index, |_, _| ());
+                        assert!(result.is_some() || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.read_remote {
+                    for j in 0..workload.read_remote {
                         let remote_index = remote_task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = hashindex_clone.peek_with(&remote_index, |_, _| ());
+                        let _result = hashindex.peek_with(&remote_index, |_, _| ());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.remove_local {
+                    for j in 0..workload.remove_local {
                         let local_index = task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = hashindex_clone.remove_async(&local_index).await;
-                        assert!(result || workload_clone.has_remote_op());
+                        let result = hashindex.remove_async(&local_index).await;
+                        assert!(result || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.remove_remote {
+                    for j in 0..workload.remove_remote {
                         let remote_index = remote_task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = hashindex_clone.remove_async(&remote_index).await;
+                        let _result = hashindex.remove_async(&remote_index).await;
                         num_operations += 1;
                     }
                 }
-                barrier_clone.wait().await;
-                total_num_operations_clone.fetch_add(num_operations, Relaxed);
+                barrier.wait().await;
+                total_num_operations.fetch_add(num_operations, Relaxed);
             }));
         }
 
@@ -1080,7 +1040,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                hashindex_perform(num_tasks, 0, hashindex.clone(), insert.clone()).await;
+                hashindex_perform(num_tasks, 0, &hashindex, insert).await;
             println!("hashindex-insert-local: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), workload_size * num_tasks);
 
@@ -1096,7 +1056,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                hashindex_perform(num_tasks, 0, hashindex.clone(), scan.clone()).await;
+                hashindex_perform(num_tasks, 0, &hashindex, scan).await;
             println!("hashindex-scan: {num_tasks}, {duration:?}, {total_num_operations}");
 
             // 3. read-local
@@ -1111,7 +1071,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                hashindex_perform(num_tasks, 0, hashindex.clone(), read.clone()).await;
+                hashindex_perform(num_tasks, 0, &hashindex, read).await;
             println!("hashindex-read-local: {num_tasks}, {duration:?}, {total_num_operations}");
 
             // 4. remove-local
@@ -1126,7 +1086,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                hashindex_perform(num_tasks, 0, hashindex.clone(), remove.clone()).await;
+                hashindex_perform(num_tasks, 0, &hashindex, remove).await;
             println!("hashindex-remove-local: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), 0);
 
@@ -1142,7 +1102,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                hashindex_perform(num_tasks, 0, hashindex.clone(), insert.clone()).await;
+                hashindex_perform(num_tasks, 0, &hashindex, insert).await;
             println!(
                 "hashindex-insert-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
             );
@@ -1159,13 +1119,8 @@ mod async_benchmarks {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) = hashindex_perform(
-                num_tasks,
-                workload_size * num_tasks,
-                hashindex.clone(),
-                mixed.clone(),
-            )
-            .await;
+            let (duration, total_num_operations) =
+                hashindex_perform(num_tasks, workload_size * num_tasks, &hashindex, mixed).await;
             println!("hashindex-mixed: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), workload_size * num_tasks);
 
@@ -1181,7 +1136,7 @@ mod async_benchmarks {
                 remove_remote: 1,
             };
             let (duration, total_num_operations) =
-                hashindex_perform(num_tasks, 0, hashindex.clone(), remove.clone()).await;
+                hashindex_perform(num_tasks, 0, &hashindex, remove).await;
             println!(
                 "hashindex-remove-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
             );
@@ -1192,7 +1147,7 @@ mod async_benchmarks {
     async fn treeindex_perform(
         num_tasks: usize,
         start_index: usize,
-        treeindex: Arc<TreeIndex<usize, usize>>,
+        treeindex: &Arc<TreeIndex<usize, usize>>,
         workload: Workload,
     ) -> (Duration, usize) {
         let total_num_operations = Arc::new(AtomicUsize::new(0));
@@ -1200,16 +1155,15 @@ mod async_benchmarks {
         let barrier = Arc::new(Barrier::new(num_tasks + 1));
         for task_id in 0..num_tasks {
             let barrier_clone = barrier.clone();
-            let treeindex_clone = treeindex.clone();
-            let workload_clone = Arc::new(workload.clone());
+            let treeindex = treeindex.clone();
             let total_num_operations_clone = total_num_operations.clone();
             task_handles.push(tokio::task::spawn(async move {
                 let mut num_operations = 0;
-                let per_op_workload_size = workload_clone.max_per_op_size();
-                let per_task_workload_size = workload_clone.size * per_op_workload_size;
+                let per_op_workload_size = workload.max_per_op_size();
+                let per_task_workload_size = workload.size * per_op_workload_size;
                 barrier_clone.wait().await;
-                for _ in 0..workload_clone.scan {
-                    treeindex_clone.iter(&Guard::new()).for_each(|(_, _)| {
+                for _ in 0..workload.scan {
+                    treeindex.iter(&Guard::new()).for_each(|(_, _)| {
                         num_operations += 1;
                     });
                 }
@@ -1220,55 +1174,55 @@ mod async_benchmarks {
                         (task_id + 1 + i % (num_tasks - 1)) % num_tasks
                     };
                     assert!(num_tasks < 2 || task_id != remote_task_id);
-                    for j in 0..workload_clone.insert_local {
+                    for j in 0..workload.insert_local {
                         let local_index = task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = treeindex_clone.insert_async(local_index, i).await;
-                        assert!(result.is_ok() || workload_clone.has_remote_op());
+                        let result = treeindex.insert_async(local_index, i).await;
+                        assert!(result.is_ok() || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.insert_remote {
+                    for j in 0..workload.insert_remote {
                         let remote_index = remote_task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = treeindex_clone.insert_async(remote_index, i).await;
+                        let _result = treeindex.insert_async(remote_index, i).await;
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.read_local {
+                    for j in 0..workload.read_local {
                         let local_index = task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = treeindex_clone.peek_with(&local_index, |_, _| ());
-                        assert!(result.is_some() || workload_clone.has_remote_op());
+                        let result = treeindex.peek_with(&local_index, |_, _| ());
+                        assert!(result.is_some() || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.read_remote {
+                    for j in 0..workload.read_remote {
                         let remote_index = remote_task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = treeindex_clone.peek_with(&remote_index, |_, _| ());
+                        let _result = treeindex.peek_with(&remote_index, |_, _| ());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.remove_local {
+                    for j in 0..workload.remove_local {
                         let local_index = task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = treeindex_clone.remove_async(&local_index).await;
-                        assert!(result || workload_clone.has_remote_op());
+                        let result = treeindex.remove_async(&local_index).await;
+                        assert!(result || workload.has_remote_op());
                         num_operations += 1;
                     }
-                    for j in 0..workload_clone.remove_remote {
+                    for j in 0..workload.remove_remote {
                         let remote_index = remote_task_id * per_task_workload_size
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = treeindex_clone.remove_async(&remote_index).await;
+                        let _result = treeindex.remove_async(&remote_index).await;
                         num_operations += 1;
                     }
                 }
@@ -1309,7 +1263,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                treeindex_perform(num_tasks, 0, treeindex.clone(), insert.clone()).await;
+                treeindex_perform(num_tasks, 0, &treeindex, insert).await;
             println!(
                 "treeindex-insert-local: {}, {:?}, {}, depth = {}",
                 num_tasks,
@@ -1331,7 +1285,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                treeindex_perform(num_tasks, 0, treeindex.clone(), scan.clone()).await;
+                treeindex_perform(num_tasks, 0, &treeindex, scan).await;
             println!("treeindex-scan: {num_tasks}, {duration:?}, {total_num_operations}",);
 
             // 3. read-local
@@ -1346,7 +1300,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                treeindex_perform(num_tasks, 0, treeindex.clone(), read.clone()).await;
+                treeindex_perform(num_tasks, 0, &treeindex, read).await;
             println!("treeindex-read-local: {num_tasks}, {duration:?}, {total_num_operations}",);
 
             // 4. remove-local
@@ -1361,7 +1315,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                treeindex_perform(num_tasks, 0, treeindex.clone(), remove.clone()).await;
+                treeindex_perform(num_tasks, 0, &treeindex, remove).await;
             println!("treeindex-remove-local: {num_tasks}, {duration:?}, {total_num_operations}",);
             assert_eq!(treeindex.len(), 0);
 
@@ -1377,7 +1331,7 @@ mod async_benchmarks {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                treeindex_perform(num_tasks, 0, treeindex.clone(), insert.clone()).await;
+                treeindex_perform(num_tasks, 0, &treeindex, insert).await;
             println!(
                 "treeindex-insert-local-remote: {}, {:?}, {}, depth = {}",
                 num_tasks,
@@ -1398,13 +1352,8 @@ mod async_benchmarks {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) = treeindex_perform(
-                num_tasks,
-                workload_size * num_tasks,
-                treeindex.clone(),
-                mixed.clone(),
-            )
-            .await;
+            let (duration, total_num_operations) =
+                treeindex_perform(num_tasks, workload_size * num_tasks, &treeindex, mixed).await;
             println!("treeindex-mixed: {num_tasks}, {duration:?}, {total_num_operations}",);
             assert_eq!(treeindex.len(), workload_size * num_tasks);
 
@@ -1420,7 +1369,7 @@ mod async_benchmarks {
                 remove_remote: 1,
             };
             let (duration, total_num_operations) =
-                treeindex_perform(num_tasks, 0, treeindex.clone(), remove.clone()).await;
+                treeindex_perform(num_tasks, 0, &treeindex, remove).await;
             println!(
                 "treeindex-remove-local-remote: {num_tasks}, {duration:?}, {total_num_operations}",
             );
@@ -1431,9 +1380,9 @@ mod async_benchmarks {
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn benchmarks_async() {
-        hashmap_benchmark(65536, vec![1, 2, 4]).await;
-        hashindex_benchmark(65536, vec![1, 2, 4]).await;
-        treeindex_benchmark(65536, vec![1, 2, 4]).await;
+        hashmap_benchmark(65536, vec![4, 8]).await;
+        hashindex_benchmark(65536, vec![4, 8]).await;
+        treeindex_benchmark(65536, vec![4, 8]).await;
     }
 
     #[ignore = "too long"]

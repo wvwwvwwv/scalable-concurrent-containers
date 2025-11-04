@@ -502,6 +502,69 @@ mod hashmap {
             assert_eq!(hashmap.len(), num_threads * workload_size);
         }
     }
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn insert_duplicate_async() {
+        let num_tasks = if cfg!(miri) { 2 } else { 8 };
+        let num_iters = if cfg!(miri) { 1 } else { 64 };
+        for _ in 0..num_iters {
+            let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+            let workload_size = 16 + num_iters;
+            let mut tasks = Vec::with_capacity(num_tasks);
+            let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+            for task_id in 0..num_tasks {
+                let barrier = barrier.clone();
+                let hashmap = hashmap.clone();
+                tasks.push(tokio::task::spawn(async move {
+                    barrier.wait().await;
+                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                    for id in range.clone() {
+                        let _result: Result<(), (usize, usize)> =
+                            hashmap.insert_async(id, id).await;
+                        let _result: Result<(), (usize, usize)> =
+                            hashmap.insert_async(id + workload_size, id).await;
+                    }
+                }));
+            }
+
+            for task in join_all(tasks).await {
+                assert!(task.is_ok());
+            }
+
+            assert_eq!(hashmap.len(), (num_tasks + 1) * workload_size);
+        }
+    }
+
+    #[test]
+    fn insert_duplicate_sync() {
+        let num_threads = if cfg!(miri) { 2 } else { 8 };
+        let num_iters = if cfg!(miri) { 1 } else { 64 };
+        for _ in 0..num_iters {
+            let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+            let workload_size = 16 + num_iters;
+            let mut threads = Vec::with_capacity(num_threads);
+            let barrier = Arc::new(Barrier::new(num_threads));
+            for thread_id in 0..num_threads {
+                let barrier = barrier.clone();
+                let hashmap = hashmap.clone();
+                threads.push(thread::spawn(move || {
+                    barrier.wait();
+                    let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
+                    for id in range.clone() {
+                        let _result: Result<(), (usize, usize)> = hashmap.insert_sync(id, id);
+                        let _result: Result<(), (usize, usize)> =
+                            hashmap.insert_sync(id + workload_size, id);
+                    }
+                }));
+            }
+
+            for thread in threads {
+                assert!(thread.join().is_ok());
+            }
+
+            assert_eq!(hashmap.len(), (num_threads + 1) * workload_size);
+        }
+    }
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
