@@ -1221,12 +1221,11 @@ where
             ) {
                 while let Some(garbage_bucket_array) = garbage_head {
                     garbage_head = garbage_bucket_array
-                        .garbage_link()
+                        .bucket_link()
                         .swap((None, Tag::None), Acquire)
                         .0;
-                    // The reference count may be larger than `1` when another thread is pushing a
-                    // garbage bucket array.
-                    let _: bool = unsafe { garbage_bucket_array.drop_in_place() };
+                    let dropped = unsafe { garbage_bucket_array.drop_in_place() };
+                    debug_assert!(dropped);
                 }
             }
         } else {
@@ -1349,7 +1348,7 @@ where
         let mut garbage_head = self.garbage_chain.swap((None, Tag::None), Acquire).0;
         while let Some(garbage_bucket_array) = garbage_head {
             garbage_head = garbage_bucket_array
-                .garbage_link()
+                .bucket_link()
                 .swap((None, Tag::None), Acquire)
                 .0;
             let dropped = unsafe { garbage_bucket_array.drop_in_place() };
@@ -1389,13 +1388,10 @@ where
 
     #[inline]
     fn defer_reclaim(&self, mut bucket_array: Shared<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
-        // The bucket array will be dropped when the epoch enters the next generation.
-        self.garbage_epoch.store(u8::from(guard.epoch()), Release);
+        self.reclaim_memory(guard);
+        self.garbage_epoch.swap(u8::from(guard.epoch()), Release);
         let mut garbage_head_ptr = self.garbage_chain.load(Acquire, guard);
         loop {
-            bucket_array
-                .garbage_link()
-                .swap((garbage_head_ptr.get_shared(), Tag::None), Release);
             match self.garbage_chain.compare_exchange(
                 garbage_head_ptr,
                 (Some(bucket_array), Tag::None),
@@ -1403,20 +1399,18 @@ where
                 Acquire,
                 guard,
             ) {
-                Err((Some(passed), actual)) => {
-                    bucket_array = passed;
-                    if let Some(prev_garbage_head) = bucket_array
-                        .garbage_link()
-                        .swap((None, Tag::None), Acquire)
-                        .0
-                    {
-                        unsafe {
-                            let _: bool = prev_garbage_head.drop_in_place();
-                        }
-                    }
+                Err((passed, actual)) => {
+                    bucket_array = passed.unwrap();
                     garbage_head_ptr = actual;
                 }
-                _ => break,
+                Ok((prev, bucket_array_ptr)) => {
+                    // The bucket array will be dropped when the epoch enters the next generation.
+                    if let Some(bucket_array) = bucket_array_ptr.as_ref() {
+                        // Connect the previous bucket array head to the new one.
+                        bucket_array.bucket_link().swap((prev, Tag::None), Release);
+                    }
+                    break;
+                }
             }
         }
     }

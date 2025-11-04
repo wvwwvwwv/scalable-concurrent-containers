@@ -19,7 +19,6 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
     sample_size_mask: u16,
     bucket_ptr_offset: u16,
     old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
-    garbage_link: AtomicShared<BucketArray<K, V, L, TYPE>>,
     num_cleared_buckets: AtomicUsize,
 }
 
@@ -93,7 +92,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 sample_size_mask: u16::from(log2_array_len).next_power_of_two() - 1,
                 bucket_ptr_offset: bucket_array_ptr_offset,
                 old_array,
-                garbage_link: AtomicShared::null(),
                 num_cleared_buckets: AtomicUsize::new(0),
             }
         }
@@ -162,12 +160,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[inline]
     pub(crate) const fn bucket_link(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>> {
         &self.old_array
-    }
-
-    /// Returns a reference to the garbage link pointer.
-    #[inline]
-    pub(crate) const fn garbage_link(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>> {
-        &self.garbage_link
     }
 
     /// Returns the recommended sampling size.
