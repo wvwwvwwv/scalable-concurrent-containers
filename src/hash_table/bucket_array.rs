@@ -37,23 +37,23 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         unsafe {
             let (bucket_size, bucket_array_allocation_size, bucket_array_layout) =
                 Self::bucket_array_layout(array_len);
-            let Some(unalignedbucket_array_ptr) = NonNull::new(alloc_zeroed(bucket_array_layout))
+            let Some(unaligned_bucket_array_ptr) = NonNull::new(alloc_zeroed(bucket_array_layout))
             else {
                 panic!("memory allocation failure: {bucket_array_allocation_size} bytes");
             };
             let bucket_array_ptr_offset = bucket_size.next_power_of_two()
-                - (unalignedbucket_array_ptr.addr().get() % bucket_size.next_power_of_two());
+                - (unaligned_bucket_array_ptr.addr().get() % bucket_size.next_power_of_two());
             assert!(
                 bucket_array_ptr_offset + bucket_size * array_len <= bucket_array_allocation_size,
             );
             assert_eq!(
-                (unalignedbucket_array_ptr.addr().get() + bucket_array_ptr_offset)
+                (unaligned_bucket_array_ptr.addr().get() + bucket_array_ptr_offset)
                     % bucket_size.next_power_of_two(),
                 0
             );
 
             #[allow(clippy::cast_ptr_alignment)] // The alignment was just asserted.
-            let buckets = unalignedbucket_array_ptr
+            let buckets = unaligned_bucket_array_ptr
                 .add(bucket_array_ptr_offset)
                 .cast::<Bucket<K, V, L, TYPE>>();
             let bucket_array_ptr_offset = u16::try_from(bucket_array_ptr_offset).unwrap_or(0);
@@ -64,11 +64,17 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             )
             .unwrap();
 
+            #[cfg(feature = "loom")]
+            for i in 0..array_len {
+                // `loom` types need proper initialization.
+                buckets.add(i).write(Bucket::new());
+            }
+
             // In case the below data block allocation fails, deallocate the bucket array.
             let mut alloc_guard = ExitGuard::new(false, |allocated| {
                 if !allocated {
                     dealloc(
-                        unalignedbucket_array_ptr.cast::<u8>().as_ptr(),
+                        unaligned_bucket_array_ptr.cast::<u8>().as_ptr(),
                         bucket_array_layout,
                     );
                 }
@@ -228,6 +234,12 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
             for index in num_cleared_buckets..self.array_len {
                 self.bucket(index).drop_entries(self.data_block(index));
             }
+        }
+
+        #[cfg(feature = "loom")]
+        for i in 0..self.array_len {
+            // `loom` types need proper cleanup.
+            drop(unsafe { self.buckets.add(i).read() });
         }
 
         unsafe {

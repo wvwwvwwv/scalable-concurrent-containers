@@ -119,6 +119,23 @@ struct LinkedBucket<K, V> {
 }
 
 impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
+    /// Creates a new [`Bucket`].
+    #[cfg(any(test, feature = "loom"))]
+    pub fn new() -> Self {
+        Self {
+            len: AtomicU32::new(0),
+            epoch: UnsafeCell::new(None),
+            rw_lock: Lock::default(),
+            metadata: Metadata {
+                link: AtomicShared::default(),
+                occupied_bitmap: AtomicU32::default(),
+                removed_bitmap_or_lru_tail: AtomicU32::default(),
+                partial_hash_array: Default::default(),
+            },
+            lru_list: L::default(),
+        }
+    }
+
     /// Returns the number of occupied and reachable slots in the [`Bucket`].
     #[inline]
     pub(crate) fn len(&self) -> usize {
@@ -501,6 +518,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             let occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
             let free_index = occupied_bitmap.trailing_ones() as usize;
             if free_index != LINKED_BUCKET_LEN {
+                debug_assert!(free_index < LINKED_BUCKET_LEN);
                 self.insert_entry(
                     &link.metadata,
                     &link.data_block,
@@ -523,7 +541,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
         let link_ptr = link.get_guarded_ptr(guard);
         if let Some(link) = link_ptr.as_ref() {
-            self.write_data_block(&link.data_block, entry, 0);
+            self.write_data_block(&link.data_block, 0, entry);
             self.write_cell(&link.metadata.partial_hash_array[0], |h| {
                 *h = Self::partial_hash(hash);
             });
@@ -554,7 +572,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         debug_assert!(index < LEN);
         debug_assert_eq!(metadata.occupied_bitmap.load(Relaxed) & (1_u32 << index), 0);
 
-        self.write_data_block(data_block, entry, index);
+        self.write_data_block(data_block, index, entry);
         self.write_cell(&metadata.partial_hash_array[index], |h| {
             *h = Self::partial_hash(hash);
         });
@@ -626,8 +644,8 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     fn write_data_block<const LEN: usize>(
         &self,
         data_block: &DataBlock<K, V, LEN>,
-        value: (K, V),
         index: usize,
+        value: (K, V),
     ) {
         self.write_cell(&data_block[index], |entry| unsafe {
             let ptr = entry.as_mut_ptr();
@@ -1089,11 +1107,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         debug_assert_ne!(TYPE, INDEX);
 
         let prev_link_ptr = link.prev_link.load(Relaxed);
-        let next = if TYPE == INDEX {
-            None
-        } else {
-            link.metadata.link.swap((None, Tag::None), Relaxed).0
-        };
+        let next = link.metadata.link.swap((None, Tag::None), Relaxed).0;
         if let Some(next) = next.as_ref() {
             next.prev_link.store(prev_link_ptr, Relaxed);
         }
@@ -1107,13 +1121,8 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
             bucket.metadata.link.swap((next, Tag::None), Release).0
         };
         if let Some(link) = unlinked {
-            if TYPE == INDEX {
-                let released = link.release();
-                debug_assert!(released);
-            } else {
-                let dropped = unsafe { link.drop_in_place() };
-                debug_assert!(dropped);
-            }
+            let dropped = unsafe { link.drop_in_place() };
+            debug_assert!(dropped);
         }
 
         if self.current_link_ptr.is_null() {
@@ -1392,11 +1401,10 @@ mod test {
     use super::*;
 
     use std::mem::MaybeUninit;
+    use std::sync::atomic::AtomicPtr;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::atomic::{AtomicPtr, AtomicU32};
 
     use proptest::prelude::*;
-    use saa::Lock;
     use sdd::{Guard, Shared};
     use tokio::sync::Barrier;
 
@@ -1404,21 +1412,6 @@ mod test {
     static_assertions::assert_eq_size!(Bucket<String, String, (), MAP>, [u8; BUCKET_LEN * 2]);
     #[cfg(not(miri))]
     static_assertions::assert_eq_size!(Bucket<String, String, DoublyLinkedList, CACHE>, [u8; BUCKET_LEN * 4]);
-
-    fn default_bucket<K: Eq, V, L: LruList, const TYPE: char>() -> Bucket<K, V, L, TYPE> {
-        Bucket {
-            len: AtomicU32::new(0),
-            epoch: UnsafeCell::default(),
-            metadata: Metadata {
-                link: AtomicShared::default(),
-                occupied_bitmap: AtomicU32::default(),
-                removed_bitmap_or_lru_tail: AtomicU32::default(),
-                partial_hash_array: Default::default(),
-            },
-            rw_lock: Lock::default(),
-            lru_list: L::default(),
-        }
-    }
 
     proptest! {
         #[cfg_attr(miri, ignore)]
@@ -1428,7 +1421,7 @@ mod test {
                 unsafe { MaybeUninit::uninit().assume_init() };
             let data_block_ptr =
                 unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
-            let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
+            let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = Bucket::new();
             for v in 0..xs {
                 let guard = Guard::new();
                 let writer = Writer::lock_sync(&bucket).unwrap();
@@ -1446,7 +1439,7 @@ mod test {
                 unsafe { MaybeUninit::uninit().assume_init() };
             let data_block_ptr =
                 unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
-            let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
+            let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = Bucket::new();
             let guard = Guard::new();
             let writer = Writer::lock_sync(&bucket).unwrap();
             for _ in 0..3 {
@@ -1494,7 +1487,7 @@ mod test {
                 unsafe { MaybeUninit::uninit().assume_init() };
             let data_block_ptr =
                 unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
-            let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
+            let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = Bucket::new();
             for v in 0..xs {
                 let guard = Guard::new();
                 let writer = Writer::lock_sync(&bucket).unwrap();
@@ -1538,7 +1531,7 @@ mod test {
                 unsafe { MaybeUninit::uninit().assume_init() };
             let data_block_ptr =
                 unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
-            let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
+            let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = Bucket::new();
             for v in 0..xs {
                 let guard = Guard::new();
                 let writer = Writer::lock_sync(&bucket).unwrap();
@@ -1578,7 +1571,7 @@ mod test {
         let barrier = Shared::new(Barrier::new(num_tasks));
         let data_block: Shared<DataBlock<usize, usize, BUCKET_LEN>> =
             Shared::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let mut bucket: Shared<Bucket<usize, usize, (), MAP>> = Shared::new(default_bucket());
+        let mut bucket: Shared<Bucket<usize, usize, (), MAP>> = Shared::new(Bucket::new());
         let mut data: [u64; 128] = [0; 128];
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {

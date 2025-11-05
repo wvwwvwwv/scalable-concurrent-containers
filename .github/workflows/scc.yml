@@ -61,7 +61,7 @@ jobs:
       - name: Miri
         run: cargo +nightly miri test
       - name: Loom
-        run: cargo test --features loom --release --lib -- --nocapture
+        run: RUST_BACKTRACE=1 cargo test --features loom --release --lib -- --nocapture
   check-misc:
     runs-on: ubuntu-latest
     timeout-minutes: 20

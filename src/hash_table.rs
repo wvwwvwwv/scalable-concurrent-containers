@@ -1001,7 +1001,7 @@ where
 
         // Lock the target buckets.
         for i in target_index..end_target_index {
-            if TRY_LOCK {
+            let writer = if TRY_LOCK {
                 let Ok(Some(writer)) = Writer::try_lock(current_array.bucket(i)) else {
                     for j in target_index..i {
                         let writer = Writer::from_bucket(current_array.bucket(j));
@@ -1009,12 +1009,11 @@ where
                     }
                     return false;
                 };
-                forget(writer);
+                writer
             } else {
-                let writer =
-                    unsafe { Writer::lock_sync(current_array.bucket(i)).unwrap_unchecked() };
-                forget(writer);
-            }
+                unsafe { Writer::lock_sync(current_array.bucket(i)).unwrap_unchecked() }
+            };
+            forget(writer);
         }
         let unlock = ExitGuard::new((), |()| {
             for i in target_index..end_target_index {
@@ -1248,7 +1247,7 @@ where
                 if Self::end_incremental_rehash(rehashing_guard.0, rehashing_guard.1, true) {
                     if let Some(bucket_array) = current_array
                         .bucket_link()
-                        .swap((None, Tag::None), Acquire)
+                        .swap((None, Tag::None), Release)
                         .0
                     {
                         self.defer_reclaim(bucket_array, async_guard.guard());
@@ -1305,7 +1304,7 @@ where
                 if Self::end_incremental_rehash(rehashing_guard.0, rehashing_guard.1, true) {
                     if let Some(bucket_array) = current_array
                         .bucket_link()
-                        .swap((None, Tag::None), Acquire)
+                        .swap((None, Tag::None), Release)
                         .0
                     {
                         self.defer_reclaim(bucket_array, guard);
@@ -1506,7 +1505,7 @@ where
             if let Some(allocated_array) = allocated_array {
                 // A new array was allocated.
                 self.bucket_array()
-                    .swap((Some(allocated_array), Tag::None), Release);
+                    .swap((Some(allocated_array), Tag::None), AcqRel);
             } else {
                 // Release the lock.
                 self.bucket_array()

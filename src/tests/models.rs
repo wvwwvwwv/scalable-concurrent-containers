@@ -4,10 +4,11 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
+use fnv::FnvBuildHasher;
 use loom::model::Builder;
 use loom::thread::{spawn, yield_now};
 
-use crate::TreeIndex;
+use crate::{HashIndex, HashMap, TreeIndex};
 
 #[derive(Debug)]
 struct A(usize, Arc<AtomicUsize>);
@@ -30,6 +31,156 @@ impl Drop for A {
 }
 
 static SERIALIZER: Mutex<()> = Mutex::new(());
+
+#[test]
+fn hashmap_key_visibility() {
+    let _guard = SERIALIZER.lock().unwrap();
+
+    for max_key in 42..72 {
+        let mut model_builder_key_visibility = Builder::new();
+        model_builder_key_visibility.max_threads = 2;
+        model_builder_key_visibility.max_branches = 1_048_576;
+        model_builder_key_visibility.check(move || {
+            let hashmap: Arc<HashMap<usize, usize, FnvBuildHasher>> = Arc::new(
+                HashMap::with_capacity_and_hasher(64, FnvBuildHasher::default()),
+            );
+            assert_eq!(hashmap.capacity(), 64);
+            for k in 0..max_key {
+                assert!(hashmap.insert_sync(k, k).is_ok());
+            }
+            let hashmap_clone = hashmap.clone();
+            let thread_insert = spawn(move || {
+                assert!(hashmap_clone.insert_sync(usize::MAX, usize::MAX).is_ok());
+                assert!(hashmap_clone.read_sync(&0, |_, _| ()).is_some());
+                drop(hashmap_clone);
+
+                loop {
+                    let guard = Guard::new();
+                    if !guard.has_garbage() {
+                        break;
+                    }
+                    guard.accelerate();
+                    yield_now();
+                }
+            });
+            assert!(hashmap.read_sync(&0, |_, _| ()).is_some());
+            assert!(thread_insert.join().is_ok());
+            assert_eq!(hashmap.len(), max_key + 1);
+
+            drop(hashmap);
+            loop {
+                let guard = Guard::new();
+                if !guard.has_garbage() {
+                    break;
+                }
+                guard.accelerate();
+                yield_now();
+            }
+        });
+    }
+}
+
+#[test]
+fn hashmap_key_uniqueness() {
+    let _guard = SERIALIZER.lock().unwrap();
+
+    for max_key in 42..72 {
+        let mut model_builder_key_uniqueness = Builder::new();
+        model_builder_key_uniqueness.max_threads = 2;
+        model_builder_key_uniqueness.max_branches = 1_048_576;
+        model_builder_key_uniqueness.check(move || {
+            let hashmap: Arc<HashMap<usize, usize, FnvBuildHasher>> = Arc::new(
+                HashMap::with_capacity_and_hasher(64, FnvBuildHasher::default()),
+            );
+            let check = Arc::new(AtomicUsize::new(0));
+            assert_eq!(hashmap.capacity(), 64);
+            for k in 0..max_key {
+                assert!(hashmap.insert_sync(k, k).is_ok());
+            }
+            let hashmap_clone = hashmap.clone();
+            let check_clone = check.clone();
+            let thread_insert = spawn(move || {
+                if hashmap_clone.insert_sync(usize::MAX, usize::MAX).is_ok() {
+                    check_clone.fetch_add(1, Relaxed);
+                }
+                drop(hashmap_clone);
+
+                loop {
+                    let guard = Guard::new();
+                    if !guard.has_garbage() {
+                        break;
+                    }
+                    guard.accelerate();
+                    yield_now();
+                }
+            });
+            if hashmap.insert_sync(usize::MAX, usize::MAX).is_ok() {
+                check.fetch_add(1, Relaxed);
+            }
+            assert!(thread_insert.join().is_ok());
+            assert_eq!(hashmap.len(), max_key + 1);
+            assert_eq!(check.load(Relaxed), 1);
+
+            drop(hashmap);
+            loop {
+                let guard = Guard::new();
+                if !guard.has_garbage() {
+                    break;
+                }
+                guard.accelerate();
+                yield_now();
+            }
+        });
+    }
+}
+
+#[test]
+fn hashindex_key_visibility() {
+    let _guard = SERIALIZER.lock().unwrap();
+
+    for max_key in 42..72 {
+        let mut model_builder_key_visibility = Builder::new();
+        model_builder_key_visibility.max_threads = 2;
+        model_builder_key_visibility.max_branches = 1_048_576;
+        model_builder_key_visibility.check(move || {
+            let hashindex: Arc<HashIndex<usize, usize, FnvBuildHasher>> = Arc::new(
+                HashIndex::with_capacity_and_hasher(64, FnvBuildHasher::default()),
+            );
+            assert_eq!(hashindex.capacity(), 64);
+            for k in 0..max_key {
+                assert!(hashindex.insert_sync(k, k).is_ok());
+            }
+            let hashindex_clone = hashindex.clone();
+            let thread_insert = spawn(move || {
+                assert!(hashindex_clone.insert_sync(usize::MAX, usize::MAX).is_ok());
+                assert!(hashindex_clone.peek_with(&0, |_, _| ()).is_some());
+                drop(hashindex_clone);
+
+                loop {
+                    let guard = Guard::new();
+                    if !guard.has_garbage() {
+                        break;
+                    }
+                    guard.accelerate();
+                    yield_now();
+                }
+            });
+            assert!(hashindex.peek_with(&0, |_, _| ()).is_some());
+            assert!(thread_insert.join().is_ok());
+            assert_eq!(hashindex.len(), max_key + 1);
+
+            drop(hashindex);
+            loop {
+                let guard = Guard::new();
+                if !guard.has_garbage() {
+                    break;
+                }
+                guard.accelerate();
+                yield_now();
+            }
+        });
+    }
+}
 
 // Checks if keys are visible while the leaf node is being split.
 #[test]

@@ -512,8 +512,8 @@ mod hashmap {
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn insert_duplicate_async() {
-        let num_tasks = if cfg!(miri) { 2 } else { 8 };
-        let num_iters = if cfg!(miri) { 1 } else { 64 };
+        let num_tasks = 8;
+        let num_iters = 64;
         for _ in 0..num_iters {
             let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
             let workload_size = 16 + num_iters;
@@ -526,19 +526,18 @@ mod hashmap {
                     barrier.wait().await;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
+                        assert!(hashmap.insert_async(id, id).await.is_ok());
+                        tokio::task::yield_now().await;
+                        assert!(hashmap.insert_async(id, id).await.is_err());
                         let _result: Result<(), (usize, usize)> =
-                            hashmap.insert_async(id, id).await;
-                        let _result: Result<(), (usize, usize)> =
-                            hashmap.insert_async(id + workload_size, id).await;
+                            hashmap.insert_async(num_tasks * workload_size, 0).await;
                     }
                 }));
             }
-
             for task in join_all(tasks).await {
                 assert!(task.is_ok());
             }
-
-            assert_eq!(hashmap.len(), (num_tasks + 1) * workload_size);
+            assert_eq!(hashmap.len(), num_tasks * workload_size + 1);
         }
     }
 
@@ -558,18 +557,18 @@ mod hashmap {
                     barrier.wait();
                     let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
                     for id in range.clone() {
-                        let _result: Result<(), (usize, usize)> = hashmap.insert_sync(id, id);
+                        assert!(hashmap.insert_sync(id, id).is_ok());
+                        thread::yield_now();
+                        assert!(hashmap.insert_sync(id, id).is_err());
                         let _result: Result<(), (usize, usize)> =
-                            hashmap.insert_sync(id + workload_size, id);
+                            hashmap.insert_sync(num_threads * workload_size, 0);
                     }
                 }));
             }
-
             for thread in threads {
                 assert!(thread.join().is_ok());
             }
-
-            assert_eq!(hashmap.len(), (num_threads + 1) * workload_size);
+            assert_eq!(hashmap.len(), num_threads * workload_size + 1);
         }
     }
 
