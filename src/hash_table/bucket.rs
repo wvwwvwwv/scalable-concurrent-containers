@@ -153,6 +153,13 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 == (u32::MAX >> (32 - BUCKET_LEN))
     }
 
+    /// Returns the partial hash value of the given hash.
+    #[allow(clippy::cast_possible_truncation)]
+    #[inline]
+    pub const fn partial_hash(hash: u64) -> u8 {
+        hash as u8
+    }
+
     /// Reserves memory for insertion and then constructs the key-value pair in-place.
     #[inline]
     pub(crate) fn insert<'g>(
@@ -621,13 +628,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 e.take();
             }
         });
-    }
-
-    /// Returns the partial hash value of the given hash.
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    const fn partial_hash(hash: u64) -> u8 {
-        hash as u8
     }
 
     /// Reads the data at the given index.

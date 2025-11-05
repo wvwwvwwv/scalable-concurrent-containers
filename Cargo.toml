@@ -27,7 +27,7 @@ loom = ["dep:loom", "sdd/loom"]
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["async_futures"] }
-fnv = "1.0.3"
+fnv = "1.0"
 futures = "0.3"
 proptest = "1.9"
 serde_test = "1.0"

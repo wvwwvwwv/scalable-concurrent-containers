@@ -159,7 +159,7 @@ mod hashmap {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn insert_capacity() {
+    async fn capacity_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let hashmap: HashMap<usize, R> = HashMap::default();
@@ -171,6 +171,38 @@ mod hashmap {
         assert_eq!(hashmap.len(), workload_size);
         assert!(hashmap.capacity() >= workload_size);
         drop(hashmap);
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn capacity_sync() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
+        let hashmap: HashMap<usize, R> = HashMap::default();
+        assert_eq!(hashmap.capacity(), 0);
+
+        let reserved_capacity = 1_048_576_usize;
+        for k in 0..256 {
+            assert!(hashmap.insert_sync(k, R::new(&INST_CNT)).is_ok());
+        }
+        assert_eq!(hashmap.capacity(), 512);
+
+        let reserve = hashmap.reserve(reserved_capacity);
+        assert!(reserve.is_some());
+        assert!(hashmap.insert_sync(usize::MAX, R::new(&INST_CNT)).is_ok());
+        assert_eq!(hashmap.capacity(), reserved_capacity);
+
+        assert_eq!(hashmap.len(), 257);
+        for k in 0..256 {
+            assert!(hashmap.insert_sync(k, R::new(&INST_CNT)).is_err());
+        }
+        assert!(hashmap.insert_sync(usize::MAX, R::new(&INST_CNT)).is_err());
+
+        drop(reserve);
+        hashmap.clear_sync();
+
+        assert!(hashmap.capacity() < reserved_capacity);
+        assert_eq!(hashmap.len(), 0);
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 

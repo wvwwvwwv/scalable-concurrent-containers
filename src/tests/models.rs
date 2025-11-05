@@ -32,6 +32,7 @@ impl Drop for A {
 
 static SERIALIZER: Mutex<()> = Mutex::new(());
 
+// Checks if the key is visible when another thread is inserting a key.
 #[test]
 fn hashmap_key_visibility() {
     let _guard = SERIALIZER.lock().unwrap();
@@ -65,6 +66,11 @@ fn hashmap_key_visibility() {
             });
             assert!(hashmap.read_sync(&0, |_, _| ()).is_some());
             assert!(thread_insert.join().is_ok());
+
+            for k in 0..max_key {
+                assert!(hashmap.read_sync(&k, |_, _| ()).is_some());
+            }
+            assert!(hashmap.read_sync(&usize::MAX, |_, _| ()).is_some());
             assert_eq!(hashmap.len(), max_key + 1);
 
             drop(hashmap);
@@ -80,6 +86,7 @@ fn hashmap_key_visibility() {
     }
 }
 
+// Checks if the same key cannot be inserted twice.
 #[test]
 fn hashmap_key_uniqueness() {
     let _guard = SERIALIZER.lock().unwrap();
@@ -118,6 +125,11 @@ fn hashmap_key_uniqueness() {
                 check.fetch_add(1, Relaxed);
             }
             assert!(thread_insert.join().is_ok());
+
+            for k in 0..max_key {
+                assert!(hashmap.read_sync(&k, |_, _| ()).is_some());
+            }
+            assert!(hashmap.read_sync(&usize::MAX, |_, _| ()).is_some());
             assert_eq!(hashmap.len(), max_key + 1);
             assert_eq!(check.load(Relaxed), 1);
 
@@ -134,6 +146,7 @@ fn hashmap_key_uniqueness() {
     }
 }
 
+// Checks if the key is visible when another thread is inserting a key.
 #[test]
 fn hashindex_key_visibility() {
     let _guard = SERIALIZER.lock().unwrap();
@@ -167,6 +180,11 @@ fn hashindex_key_visibility() {
             });
             assert!(hashindex.peek_with(&0, |_, _| ()).is_some());
             assert!(thread_insert.join().is_ok());
+
+            for k in 0..max_key {
+                assert!(hashindex.peek_with(&k, |_, _| ()).is_some());
+            }
+            assert!(hashindex.peek_with(&usize::MAX, |_, _| ()).is_some());
             assert_eq!(hashindex.len(), max_key + 1);
 
             drop(hashindex);

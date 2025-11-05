@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.3.5
+
+* Enhance `Hash*` capacity management.
+
 3.3.4
 
 * Minor asynchronous code optimization.

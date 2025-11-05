@@ -456,7 +456,7 @@ where
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
         let async_guard = pin!(AsyncGuard::default());
         let mut entry = None;
-        self.for_each_writer_async(0, 0, &async_guard, |locked_bucket| {
+        self.for_each_writer_async(0, 0, &async_guard, |locked_bucket, _| {
             let guard = self.prolonged_guard_ref(async_guard.guard());
             let mut entry_ptr = EntryPtr::new(guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, guard) {
@@ -499,7 +499,7 @@ where
         let mut entry = None;
         let guard = Guard::new();
         let prolonged_guard = self.prolonged_guard_ref(&guard);
-        self.for_each_writer_sync(0, 0, prolonged_guard, |locked_bucket| {
+        self.for_each_writer_sync(0, 0, prolonged_guard, |locked_bucket, _| {
             let mut entry_ptr = EntryPtr::new(prolonged_guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, prolonged_guard) {
                 let (k, v) = locked_bucket.entry(&entry_ptr);
@@ -1243,27 +1243,20 @@ where
     ) -> bool {
         let async_guard = pin!(AsyncGuard::default());
         let mut result = true;
-        self.for_each_writer_async(0, 0, &async_guard, |mut locked_bucket| {
-            let mut removed = false;
+        self.for_each_writer_async(0, 0, &async_guard, |mut locked_bucket, removed| {
             let guard = async_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, guard) {
                 let consumable_entry = ConsumableEntry {
                     locked_bucket: &mut locked_bucket,
                     entry_ptr: &mut entry_ptr,
-                    remove_probe: &mut removed,
+                    remove_probe: removed,
                     guard,
                 };
                 if !f(consumable_entry) {
-                    if removed {
-                        locked_bucket.try_shrink_or_rebuild(self, guard);
-                    }
                     result = false;
                     return true;
                 }
-            }
-            if removed {
-                locked_bucket.try_shrink_or_rebuild(self, guard);
             }
             false
         })
@@ -1302,26 +1295,19 @@ where
     pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         let guard = Guard::new();
-        self.for_each_writer_sync(0, 0, &guard, |mut locked_bucket| {
-            let mut removed = false;
+        self.for_each_writer_sync(0, 0, &guard, |mut locked_bucket, removed| {
             let mut entry_ptr = EntryPtr::new(&guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, &guard) {
                 let consumable_entry = ConsumableEntry {
                     locked_bucket: &mut locked_bucket,
                     entry_ptr: &mut entry_ptr,
-                    remove_probe: &mut removed,
+                    remove_probe: removed,
                     guard: &guard,
                 };
                 if !f(consumable_entry) {
-                    if removed {
-                        locked_bucket.try_shrink_or_rebuild(self, &guard);
-                    }
                     result = false;
                     return true;
                 }
-            }
-            if removed {
-                locked_bucket.try_shrink_or_rebuild(self, &guard);
             }
             false
         });

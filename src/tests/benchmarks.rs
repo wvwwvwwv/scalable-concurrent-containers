@@ -29,48 +29,51 @@ mod common {
                 ..default
             }
         }
-        pub fn insert_local(self) -> Self {
+        pub const fn mixed(self) -> Self {
+            Self {
+                insert_local: true,
+                insert_remote: true,
+                read_local: true,
+                read_remote: true,
+                remove_local: true,
+                remove_remote: true,
+                ..self
+            }
+        }
+        pub const fn insert_local(self) -> Self {
             Self {
                 insert_local: true,
                 ..self
             }
         }
-        pub fn insert_remote(self) -> Self {
+        pub const fn insert_remote(self) -> Self {
             Self {
                 insert_remote: true,
                 ..self
             }
         }
-        pub fn scan(self) -> Self {
+        pub const fn scan(self) -> Self {
             Self { scan: true, ..self }
         }
-        pub fn read_local(self) -> Self {
+        pub const fn read_local(self) -> Self {
             Self {
                 read_local: true,
                 ..self
             }
         }
-        pub fn read_remote(self) -> Self {
-            Self {
-                read_remote: true,
-                ..self
-            }
-        }
-        pub fn remove_local(self) -> Self {
+        pub const fn remove_local(self) -> Self {
             Self {
                 remove_local: true,
                 ..self
             }
         }
-
-        pub fn remove_remote(self) -> Self {
+        pub const fn remove_remote(self) -> Self {
             Self {
                 remove_remote: true,
                 ..self
             }
         }
-
-        pub fn has_remote_op(&self) -> bool {
+        pub const fn has_remote_op(&self) -> bool {
             self.insert_remote || self.read_remote || self.remove_remote
         }
     }
@@ -271,6 +274,7 @@ mod async_benchmarks {
     use std::sync::atomic::Ordering::Relaxed;
     use std::time::{Duration, Instant};
 
+    use sdd::Guard;
     use tokio::sync::Barrier;
 
     use super::common::{BenchmarkOperation, ConvertFromUsize, Workload};
@@ -287,13 +291,16 @@ mod async_benchmarks {
         V: 'static + Clone + ConvertFromUsize + Send + Sync,
         C: 'static + BenchmarkOperation<K, V, RandomState>,
     {
-        let total_num_operations = Arc::new(AtomicUsize::new(0));
+        for _ in 0..64 {
+            Guard::new().accelerate();
+        }
+        let total_ops = Arc::new(AtomicUsize::new(0));
         let mut task_handles = Vec::with_capacity(num_tasks);
         let barrier = Arc::new(Barrier::new(num_tasks + 1));
         for task_id in 0..num_tasks {
             let barrier = barrier.clone();
             let container = container.clone();
-            let total_num_operations = total_num_operations.clone();
+            let total_ops = total_ops.clone();
             task_handles.push(tokio::task::spawn(async move {
                 let mut num_operations = 0;
                 barrier.wait().await;
@@ -346,7 +353,7 @@ mod async_benchmarks {
                     }
                 }
                 barrier.wait().await;
-                total_num_operations.fetch_add(num_operations, Relaxed);
+                total_ops.fetch_add(num_operations, Relaxed);
             }));
         }
 
@@ -361,216 +368,150 @@ mod async_benchmarks {
 
         (
             end_time.saturating_duration_since(start_time),
-            total_num_operations.load(Relaxed),
+            total_ops.load(Relaxed),
         )
     }
 
-    async fn hashmap_benchmark(workload_size: usize, num_tasks_list: Vec<usize>) {
-        for num_tasks in num_tasks_list {
-            let hashmap: Arc<HashMap<usize, usize, RandomState>> = Arc::new(HashMap::default());
+    macro_rules! scenario {
+        ($n:ident, $c:expr, $s:expr, $t:expr) => {
+            let $n = $c;
 
             // 1. insert-local
-            let insert = Workload::new(workload_size).insert_local();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashmap, insert).await;
-            println!("hashmap-insert-local: {num_tasks}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashmap.len(), workload_size * num_tasks);
+            let insert = Workload::new($s).insert_local();
+            let (duration, total_ops) = perform($t, 0, &$n, insert).await;
+            println!(
+                "{}-insert-local-async: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
+            assert_eq!($n.len(), $s * $t);
 
             // 2. scan
-            let scan = Workload::new(workload_size).scan();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashmap, scan).await;
-            println!("hashmap-scan: {num_tasks}, {duration:?}, {total_num_operations}");
+            let scan = Workload::new($s).scan();
+            let (duration, total_ops) = perform($t, 0, &$n, scan).await;
+            println!(
+                "{}-scan-async: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
 
             // 3. read-local
-            let read = Workload::new(workload_size).read_local();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashmap, read).await;
-            println!("hashmap-read-local: {num_tasks}, {duration:?}, {total_num_operations}");
+            let read = Workload::new($s).read_local();
+            let (duration, total_ops) = perform($t, 0, &$n, read).await;
+            println!(
+                "{}-read-local-async: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
 
             // 4. remove-local
-            let remove = Workload::new(workload_size).remove_local();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashmap, remove).await;
-            println!("hashmap-remove-local: {num_tasks}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashmap.len(), 0);
+            let remove = Workload::new($s).remove_local();
+            let (duration, total_ops) = perform($t, 0, &$n, remove).await;
+            println!(
+                "{}-remove-local-async: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
+            assert_eq!($n.len(), 0);
 
             // 5. insert-local-remote
-            let insert = Workload::new(workload_size).insert_local().insert_remote();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashmap, insert).await;
+            let insert = Workload::new($s).insert_local().insert_remote();
+            let (duration, total_ops) = perform($t, 0, &$n, insert).await;
             println!(
-                "hashmap-insert-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
+                "{}-insert-local-remote-async: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
             );
-            assert_eq!(hashmap.len(), workload_size * num_tasks);
+            assert_eq!($n.len(), $s * $t);
 
             // 6. mixed
-            let mixed = Workload::new(workload_size)
-                .insert_local()
-                .insert_remote()
-                .read_local()
-                .read_remote()
-                .remove_local()
-                .remove_remote();
-            let (duration, total_num_operations) =
-                perform(num_tasks, workload_size * num_tasks, &hashmap, mixed).await;
-            println!("hashmap-mixed: {num_tasks}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashmap.len(), workload_size * num_tasks);
+            let mixed = Workload::new($s).mixed();
+            let (duration, total_ops) = perform($t, $s * $t, &$n, mixed).await;
+            println!(
+                "{}-mixed-async: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
+            assert_eq!($n.len(), $s * $t);
 
             // 7. remove-local-remote
-            let remove = Workload::new(workload_size).remove_local().remove_remote();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashmap, remove).await;
+            let remove = Workload::new($s).remove_local().remove_remote();
+            let (duration, total_ops) = perform($t, 0, &$n, remove).await;
             println!(
-                "hashmap-remove-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
+                "{}-remove-local-remote-async: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
             );
-            assert_eq!(hashmap.len(), 0);
+            assert_eq!($n.len(), 0);
+        };
+    }
+
+    async fn hashmap_benchmark<T>(workload_size: usize, num_tasks_list: Vec<usize>)
+    where
+        T: 'static + ConvertFromUsize + Clone + Hash + Ord + Send + Sync,
+    {
+        for num_tasks in num_tasks_list {
+            scenario!(
+                hashmap,
+                Arc::new(HashMap::<T, T, RandomState>::default()),
+                workload_size,
+                num_tasks
+            );
         }
     }
 
-    async fn hashindex_benchmark(workload_size: usize, num_tasks_list: Vec<usize>) {
+    async fn hashindex_benchmark<T>(workload_size: usize, num_tasks_list: Vec<usize>)
+    where
+        T: 'static + ConvertFromUsize + Clone + Hash + Ord + Send + Sync,
+    {
         for num_tasks in num_tasks_list {
-            let hashindex: Arc<HashIndex<usize, usize, RandomState>> =
-                Arc::new(HashIndex::default());
-
-            // 1. insert-local
-            let insert = Workload::new(workload_size).insert_local();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashindex, insert).await;
-            println!("hashindex-insert-local: {num_tasks}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashindex.len(), workload_size * num_tasks);
-
-            // 2. scan
-            let scan = Workload::new(workload_size).scan();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashindex, scan).await;
-            println!("hashindex-scan: {num_tasks}, {duration:?}, {total_num_operations}");
-
-            // 3. read-local
-            let read = Workload::new(workload_size).read_local();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashindex, read).await;
-            println!("hashindex-read-local: {num_tasks}, {duration:?}, {total_num_operations}");
-
-            // 4. remove-local
-            let remove = Workload::new(workload_size).remove_local();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashindex, remove).await;
-            println!("hashindex-remove-local: {num_tasks}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashindex.len(), 0);
-
-            // 5. insert-local-remote
-            let insert = Workload::new(workload_size).insert_local().insert_remote();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashindex, insert).await;
-            println!(
-                "hashindex-insert-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
+            scenario!(
+                hashmap,
+                Arc::new(HashIndex::<T, T, RandomState>::default()),
+                workload_size,
+                num_tasks
             );
-            assert_eq!(hashindex.len(), workload_size * num_tasks);
-
-            // 6. mixed
-            let mixed = Workload::new(workload_size)
-                .insert_local()
-                .insert_remote()
-                .read_local()
-                .read_remote()
-                .remove_local()
-                .remove_remote();
-            let (duration, total_num_operations) =
-                perform(num_tasks, workload_size * num_tasks, &hashindex, mixed).await;
-            println!("hashindex-mixed: {num_tasks}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashindex.len(), workload_size * num_tasks);
-
-            // 7. remove-local-remote
-            let remove = Workload::new(workload_size).remove_local().remove_remote();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &hashindex, remove).await;
-            println!(
-                "hashindex-remove-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
-            );
-            assert_eq!(hashindex.len(), 0);
         }
     }
 
-    async fn treeindex_benchmark(workload_size: usize, num_tasks_list: Vec<usize>) {
+    async fn treeindex_benchmark<T>(workload_size: usize, num_tasks_list: Vec<usize>)
+    where
+        T: 'static + ConvertFromUsize + Clone + Hash + Ord + Send + Sync,
+    {
         for num_tasks in num_tasks_list {
-            let treeindex: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::default());
-
-            // 1. insert-local
-            let insert = Workload::new(workload_size).insert_local();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &treeindex, insert).await;
-            println!(
-                "treeindex-insert-local: {}, {:?}, {}, depth = {}",
-                num_tasks,
-                duration,
-                total_num_operations,
-                treeindex.depth()
+            scenario!(
+                hashmap,
+                Arc::new(TreeIndex::<T, T>::default()),
+                workload_size,
+                num_tasks
             );
-            assert_eq!(treeindex.len(), workload_size * num_tasks);
-
-            // 2. scan
-            let scan = Workload::new(workload_size).scan();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &treeindex, scan).await;
-            println!("treeindex-scan: {num_tasks}, {duration:?}, {total_num_operations}",);
-
-            // 3. read-local
-            let read = Workload::new(workload_size).read_local();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &treeindex, read).await;
-            println!("treeindex-read-local: {num_tasks}, {duration:?}, {total_num_operations}",);
-
-            // 4. remove-local
-            let remove = Workload::new(workload_size).remove_local();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &treeindex, remove).await;
-            println!("treeindex-remove-local: {num_tasks}, {duration:?}, {total_num_operations}",);
-            assert_eq!(treeindex.len(), 0);
-
-            // 5. insert-local-remote
-            let insert = Workload::new(workload_size).insert_local().insert_remote();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &treeindex, insert).await;
-            println!(
-                "treeindex-insert-local-remote: {}, {:?}, {}, depth = {}",
-                num_tasks,
-                duration,
-                total_num_operations,
-                treeindex.depth()
-            );
-            assert_eq!(treeindex.len(), workload_size * num_tasks);
-
-            // 6. mixed
-            let mixed = Workload::new(workload_size)
-                .insert_local()
-                .insert_remote()
-                .read_local()
-                .read_remote()
-                .remove_local()
-                .remove_remote();
-            let (duration, total_num_operations) =
-                perform(num_tasks, workload_size * num_tasks, &treeindex, mixed).await;
-            println!("treeindex-mixed: {num_tasks}, {duration:?}, {total_num_operations}",);
-            assert_eq!(treeindex.len(), workload_size * num_tasks);
-
-            // 7. remove-local-remote
-            let remove = Workload::new(workload_size).remove_local().remove_remote();
-            let (duration, total_num_operations) = perform(num_tasks, 0, &treeindex, remove).await;
-            println!(
-                "treeindex-remove-local-remote: {num_tasks}, {duration:?}, {total_num_operations}",
-            );
-            assert_eq!(treeindex.len(), 0);
         }
     }
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn benchmarks_async() {
-        hashmap_benchmark(65536, vec![4, 8]).await;
-        hashindex_benchmark(65536, vec![4, 8]).await;
-        treeindex_benchmark(65536, vec![4, 8]).await;
+        hashmap_benchmark::<usize>(65536, vec![4, 8]).await;
+        hashindex_benchmark::<usize>(65536, vec![4, 8]).await;
+        treeindex_benchmark::<usize>(65536, vec![4, 8]).await;
     }
 
     #[ignore = "too long"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 128)]
     async fn full_scale_benchmarks_async() {
-        hashmap_benchmark(
+        hashmap_benchmark::<usize>(
             1024 * 1024 * 16,
             vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
         )
         .await;
         println!("----");
-        hashindex_benchmark(
+        hashindex_benchmark::<usize>(
             1024 * 1024 * 16,
             vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
         )
         .await;
         println!("----");
-        treeindex_benchmark(
+        treeindex_benchmark::<usize>(
             1024 * 1024 * 16,
             vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
         )
@@ -607,12 +548,12 @@ mod sync_benchmarks {
             Guard::new().accelerate();
         }
         let barrier = Arc::new(Barrier::new(num_threads + 1));
-        let total_num_operations = Arc::new(AtomicUsize::new(0));
+        let total_ops = Arc::new(AtomicUsize::new(0));
         let mut thread_handles = Vec::with_capacity(num_threads);
         for thread_id in 0..num_threads {
             let container = container.clone();
             let barrier = barrier.clone();
-            let total_num_operations = total_num_operations.clone();
+            let total_ops = total_ops.clone();
             thread_handles.push(thread::spawn(move || {
                 let mut num_operations = 0;
                 barrier.wait();
@@ -661,7 +602,7 @@ mod sync_benchmarks {
                     }
                 }
                 barrier.wait();
-                total_num_operations.fetch_add(num_operations, Relaxed);
+                total_ops.fetch_add(num_operations, Relaxed);
             }));
         }
         barrier.wait();
@@ -673,8 +614,82 @@ mod sync_benchmarks {
         }
         (
             end_time.saturating_duration_since(start_time),
-            total_num_operations.load(Relaxed),
+            total_ops.load(Relaxed),
         )
+    }
+
+    macro_rules! scenario {
+        ($n:ident, $c:expr, $s:expr, $t:expr) => {
+            let $n = $c;
+
+            // 1. insert-local
+            let insert = Workload::new($s).insert_local();
+            let (duration, total_ops) = perform($t, 0, &$n, insert);
+            println!(
+                "{}-insert-local-sync: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
+            assert_eq!($n.len(), $s * $t);
+
+            // 2. scan
+            let scan = Workload::new($s).scan();
+            let (duration, total_ops) = perform($t, 0, &$n, scan);
+            println!(
+                "{}-scan-sync: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
+
+            // 3. read-local
+            let read = Workload::new($s).read_local();
+            let (duration, total_ops) = perform($t, 0, &$n, read);
+            println!(
+                "{}-read-local-sync: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
+
+            // 4. remove-local
+            let remove = Workload::new($s).remove_local();
+            let (duration, total_ops) = perform($t, 0, &$n, remove);
+            println!(
+                "{}-remove-local-sync: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
+            assert_eq!($n.len(), 0);
+
+            // 5. insert-local-remote
+            let insert = Workload::new($s).insert_local().insert_remote();
+            let (duration, total_ops) = perform($t, 0, &$n, insert);
+            println!(
+                "{}-insert-local-remote-sync: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
+            assert_eq!($n.len(), $s * $t);
+
+            // 6. mixed
+            let mixed = Workload::new($s).mixed();
+            let (duration, total_ops) = perform($t, $s * $t, &$n, mixed);
+            println!(
+                "{}-mixed-sync: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
+            assert_eq!($n.len(), $s * $t);
+
+            // 7. remove-local-remote
+            let remove = Workload::new($s).remove_local().remove_remote();
+            let (duration, total_ops) = perform($t, 0, &$n, remove);
+            println!(
+                "{}-remove-local-remote-sync: {}, {duration:?}, {total_ops}",
+                $t,
+                stringify!($n)
+            );
+            assert_eq!($n.len(), 0);
+        };
     }
 
     fn hashmap_benchmark<T>(workload_size: usize, num_threads: Vec<usize>)
@@ -682,58 +697,12 @@ mod sync_benchmarks {
         T: 'static + ConvertFromUsize + Clone + Eq + Hash + Ord + Send + Sync,
     {
         for num_threads in num_threads {
-            let hashmap: Arc<HashMap<usize, usize, RandomState>> = Arc::new(HashMap::default());
-
-            // 1. insert-local
-            let insert = Workload::new(workload_size).insert_local();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, insert);
-            println!("hashmap-insert-local: {num_threads}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashmap.len(), workload_size * num_threads);
-
-            // 2. scan
-            let scan = Workload::new(workload_size).scan();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, scan);
-            println!("hashmap-scan: {num_threads}, {duration:?}, {total_num_operations}");
-
-            // 3. read-local
-            let read = Workload::new(workload_size).read_local();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, read);
-            println!("hashmap-read-local: {num_threads}, {duration:?}, {total_num_operations}");
-
-            // 4. remove-local
-            let remove = Workload::new(workload_size).remove_local();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, remove);
-            println!("hashmap-remove-local: {num_threads}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashmap.len(), 0);
-
-            // 5. insert-local-remote
-            let insert = Workload::new(workload_size).insert_local().insert_remote();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, insert);
-            println!(
-                "hashmap-insert-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
+            scenario!(
+                hashmap,
+                Arc::new(HashMap::<T, T, RandomState>::default()),
+                workload_size,
+                num_threads
             );
-            assert_eq!(hashmap.len(), workload_size * num_threads);
-
-            // 6. mixed
-            let mixed = Workload::new(workload_size)
-                .insert_local()
-                .insert_remote()
-                .read_local()
-                .read_remote()
-                .remove_local()
-                .remove_remote();
-            let (duration, total_num_operations) =
-                perform(num_threads, workload_size * num_threads, &hashmap, mixed);
-            println!("hashmap-mixed: {num_threads}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashmap.len(), workload_size * num_threads);
-
-            // 7. remove-local-remote
-            let remove = Workload::new(workload_size).remove_local().remove_remote();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashmap, remove);
-            println!(
-                "hashmap-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
-            );
-            assert_eq!(hashmap.len(), 0);
         }
     }
 
@@ -742,58 +711,12 @@ mod sync_benchmarks {
         T: 'static + ConvertFromUsize + Clone + Eq + Hash + Ord + Send + Sync,
     {
         for num_threads in num_threads {
-            let hashindex: Arc<HashIndex<T, T, RandomState>> = Arc::new(HashIndex::default());
-
-            // 1. insert-local
-            let insert = Workload::new(workload_size).insert_local();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, insert);
-            println!("hashindex-insert-local: {num_threads}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashindex.len(), workload_size * num_threads);
-
-            // 2. scan
-            let scan = Workload::new(workload_size).scan();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, scan);
-            println!("hashindex-scan: {num_threads}, {duration:?}, {total_num_operations}");
-
-            // 3. read-local
-            let read = Workload::new(workload_size).read_local();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, read);
-            println!("hashindex-read-local: {num_threads}, {duration:?}, {total_num_operations}");
-
-            // 4. remove-local
-            let remove = Workload::new(workload_size).remove_local();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, remove);
-            println!("hashindex-remove-local: {num_threads}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashindex.len(), 0);
-
-            // 5. insert-local-remote
-            let insert = Workload::new(workload_size).insert_local().insert_remote();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, insert);
-            println!(
-                "hashindex-insert-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
+            scenario!(
+                hashindex,
+                Arc::new(HashIndex::<T, T, RandomState>::default()),
+                workload_size,
+                num_threads
             );
-            assert_eq!(hashindex.len(), workload_size * num_threads);
-
-            // 6. mixed
-            let mixed = Workload::new(workload_size)
-                .insert_local()
-                .insert_remote()
-                .read_local()
-                .read_remote()
-                .remove_local()
-                .remove_remote();
-            let (duration, total_num_operations) =
-                perform(num_threads, workload_size * num_threads, &hashindex, mixed);
-            println!("hashindex-mixed: {num_threads}, {duration:?}, {total_num_operations}");
-            assert_eq!(hashindex.len(), workload_size * num_threads);
-
-            // 7. remove-local-remote
-            let remove = Workload::new(workload_size).remove_local().remove_remote();
-            let (duration, total_num_operations) = perform(num_threads, 0, &hashindex, remove);
-            println!(
-                "hashindex-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
-            );
-            assert_eq!(hashindex.len(), 0);
         }
     }
 
@@ -802,65 +725,11 @@ mod sync_benchmarks {
         T: 'static + ConvertFromUsize + Clone + Hash + Ord + Send + Sync,
     {
         for num_threads in num_threads {
-            let treeindex: Arc<TreeIndex<T, T>> = Arc::new(TreeIndex::default());
-
-            // 1. insert-local
-            let insert = Workload::new(workload_size).insert_local();
-            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, insert);
-            assert_eq!(treeindex.len(), total_num_operations);
-            println!(
-                "treeindex-insert-local: {}, {:?}, {}, depth = {}",
-                num_threads,
-                duration,
-                total_num_operations,
-                treeindex.depth()
-            );
-
-            // 2. scan
-            let scan = Workload::new(workload_size).scan();
-            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, scan);
-            println!("treeindex-scan: {num_threads}, {duration:?}, {total_num_operations}");
-
-            // 3. read-local
-            let read = Workload::new(workload_size).read_local();
-            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, read);
-            println!("treeindex-read-local: {num_threads}, {duration:?}, {total_num_operations}");
-
-            // 4. remove-local
-            let remove = Workload::new(workload_size).remove_local();
-            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, remove);
-            println!("treeindex-remove-local: {num_threads}, {duration:?}, {total_num_operations}");
-            assert_eq!(treeindex.len(), 0);
-
-            // 5. insert-local-remote
-            let insert = Workload::new(workload_size).insert_local().insert_remote();
-            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, insert);
-            assert_eq!(treeindex.len(), total_num_operations / 2);
-            println!(
-                "treeindex-insert-local-remote: {}, {:?}, {}, depth = {}",
-                num_threads,
-                duration,
-                total_num_operations,
-                treeindex.depth()
-            );
-
-            // 6. mixed
-            let mixed = Workload::new(workload_size)
-                .insert_local()
-                .insert_remote()
-                .read_local()
-                .read_remote()
-                .remove_local()
-                .remove_remote();
-            let (duration, total_num_operations) =
-                perform(num_threads, treeindex.len(), &treeindex, mixed);
-            println!("treeindex-mixed: {num_threads}, {duration:?}, {total_num_operations}");
-
-            // 7. remove-local-remote
-            let remove = Workload::new(workload_size).remove_local().read_remote();
-            let (duration, total_num_operations) = perform(num_threads, 0, &treeindex, remove);
-            println!(
-                "treeindex-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
+            scenario!(
+                treeindex,
+                Arc::new(TreeIndex::<T, T>::default()),
+                workload_size,
+                num_threads
             );
         }
     }

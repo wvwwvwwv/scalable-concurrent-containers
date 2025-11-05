@@ -432,7 +432,7 @@ where
         let async_guard = pin!(AsyncGuard::default());
         self.reclaim_memory(async_guard.guard());
         let mut entry = None;
-        self.for_each_writer_async(0, 0, &async_guard, |locked_bucket| {
+        self.for_each_writer_async(0, 0, &async_guard, |locked_bucket, _| {
             let guard = self.prolonged_guard_ref(async_guard.guard());
             let mut entry_ptr = EntryPtr::new(guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, guard) {
@@ -476,7 +476,7 @@ where
         let guard = Guard::new();
         self.reclaim_memory(&guard);
         let prolonged_guard = self.prolonged_guard_ref(&guard);
-        self.for_each_writer_sync(0, 0, prolonged_guard, |locked_bucket| {
+        self.for_each_writer_sync(0, 0, prolonged_guard, |locked_bucket, _| {
             let mut entry_ptr = EntryPtr::new(prolonged_guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, prolonged_guard) {
                 let (k, v) = locked_bucket.entry(&entry_ptr);
@@ -965,19 +965,15 @@ where
     pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
         let async_guard = pin!(AsyncGuard::default());
         self.reclaim_memory(async_guard.guard());
-        self.for_each_writer_async(0, 0, &async_guard, |mut locked_bucket| {
-            let mut removed = false;
+        self.for_each_writer_async(0, 0, &async_guard, |mut locked_bucket, removed| {
             let guard = async_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, guard) {
                 let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
                 if !pred(k, v) {
                     locked_bucket.writer.mark_removed(&mut entry_ptr, guard);
-                    removed = true;
+                    *removed = true;
                 }
-            }
-            if removed {
-                locked_bucket.try_shrink_or_rebuild(self, guard);
             }
             false
         })
@@ -1011,18 +1007,14 @@ where
     pub fn retain_sync<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
         let guard = Guard::new();
         self.reclaim_memory(&guard);
-        self.for_each_writer_sync(0, 0, &guard, |mut locked_bucket| {
-            let mut removed = false;
+        self.for_each_writer_sync(0, 0, &guard, |mut locked_bucket, removed| {
             let mut entry_ptr = EntryPtr::new(&guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, &guard) {
                 let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
                 if !pred(k, v) {
                     locked_bucket.writer.mark_removed(&mut entry_ptr, &guard);
-                    removed = true;
+                    *removed = true;
                 }
-            }
-            if removed {
-                locked_bucket.try_shrink_or_rebuild(self, &guard);
             }
             false
         });

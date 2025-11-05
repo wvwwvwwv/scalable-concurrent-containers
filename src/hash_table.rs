@@ -662,9 +662,10 @@ where
         async_guard: &AsyncGuard,
         mut f: F,
     ) where
-        F: FnMut(LockedBucket<K, V, L, TYPE>) -> bool,
+        F: FnMut(LockedBucket<K, V, L, TYPE>, &mut bool) -> bool,
     {
         let mut prev_len = expected_array_len;
+        let mut removed = false;
         while let Some(current_array) = async_guard.load(self.bucket_array(), Acquire) {
             // In case the method is repeating the routine, iterate over entries from the middle of
             // the array.
@@ -703,7 +704,7 @@ where
                         bucket_index,
                         bucket_array: Self::into_non_null(current_array),
                     };
-                    let stop = f(locked_bucket);
+                    let stop = f(locked_bucket, &mut removed);
                     if stop {
                         // Stop iterating over buckets.
                         start_index = current_array_len;
@@ -720,6 +721,16 @@ where
                 break;
             }
         }
+
+        if removed {
+            if let Some(current_array) = self
+                .bucket_array()
+                .load(Acquire, async_guard.guard())
+                .as_ref()
+            {
+                self.try_shrink_or_rebuild(current_array, 0, async_guard.guard());
+            }
+        }
     }
 
     /// Iterates over all the buckets in the [`HashTable`].
@@ -733,9 +744,10 @@ where
         guard: &Guard,
         mut f: F,
     ) where
-        F: FnMut(LockedBucket<K, V, L, TYPE>) -> bool,
+        F: FnMut(LockedBucket<K, V, L, TYPE>, &mut bool) -> bool,
     {
         let mut prev_len = expected_array_len;
+        let mut removed = false;
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             // In case the method is repeating the routine, iterate over entries from the middle of
             // the array.
@@ -768,7 +780,7 @@ where
                         bucket_index,
                         bucket_array: Self::into_non_null(current_array),
                     };
-                    let stop = f(locked_bucket);
+                    let stop = f(locked_bucket, &mut removed);
                     if stop {
                         // Stop iterating over buckets.
                         start_index = current_array_len;
@@ -783,6 +795,12 @@ where
 
             if start_index == current_array_len {
                 break;
+            }
+        }
+
+        if removed {
+            if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
+                self.try_shrink_or_rebuild(current_array, 0, guard);
             }
         }
     }
@@ -1055,8 +1073,10 @@ where
             old_array.len() >= current_array.len() || old_writer.len() > BUCKET_LEN;
         let mut distribution = [0_u32; 8];
         let mut extended_distribution: Vec<u32> = Vec::new();
-        let mut rehash_data = [[(0_u8, 0_u8); BUCKET_LEN]; 2];
-        let mut extended_data = Vec::new();
+        let mut hash_data = [[0_u8; BUCKET_LEN]; 2];
+        let mut extended_hash_data = Vec::new();
+        let mut offset_data = [[0_usize; BUCKET_LEN]; 2];
+        let mut extended_offset_data = Vec::new();
         let old_data_block = old_array.data_block(old_index);
 
         // Collect data for relocation.
@@ -1064,41 +1084,44 @@ where
         let mut position = 0;
         while entry_ptr.move_to_next(old_writer, guard) {
             let old_entry = entry_ptr.get(old_data_block);
-            let (index, partial_hash) = if old_array.len() >= current_array.len() {
+            let (offset, hash) = if old_array.len() >= current_array.len() {
                 debug_assert_eq!(
                     current_array.calculate_bucket_index(self.hash(&old_entry.0)),
                     target_index
                 );
-                (0_u8, entry_ptr.partial_hash(&**old_writer))
+                (0, entry_ptr.partial_hash(&**old_writer))
             } else {
                 let hash = self.hash(&old_entry.0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                #[allow(clippy::cast_possible_truncation)]
-                ((new_index - target_index) as u8, hash as u8)
+                (
+                    new_index - target_index,
+                    Bucket::<K, V, L, TYPE>::partial_hash(hash),
+                )
             };
 
             if pre_allocate_slots {
                 if position < BUCKET_LEN * 2 {
-                    rehash_data[position / BUCKET_LEN][position % BUCKET_LEN] =
-                        (index, partial_hash);
+                    hash_data[position / BUCKET_LEN][position % BUCKET_LEN] = hash;
+                    offset_data[position / BUCKET_LEN][position % BUCKET_LEN] = offset;
                     position += 1;
                 } else {
-                    extended_data.push((index, partial_hash));
+                    extended_hash_data.push(hash);
+                    extended_offset_data.push(offset);
                 }
-                if usize::from(index) < 8 {
-                    distribution[usize::from(index)] += 1;
+                if offset < 8 {
+                    distribution[offset] += 1;
                 } else {
-                    if extended_distribution.len() < usize::from(index) - 7 {
-                        extended_distribution.resize(usize::from(index) - 7, 0);
+                    if extended_distribution.len() < offset - 7 {
+                        extended_distribution.resize(offset - 7, 0);
                     }
-                    extended_distribution[usize::from(index) - 8] += 1;
+                    extended_distribution[offset - 8] += 1;
                 }
             } else {
-                let bucket = current_array.bucket(target_index + usize::from(index));
+                let bucket = current_array.bucket(target_index + offset);
                 bucket.extract_from(
-                    current_array.data_block(target_index + usize::from(index)),
-                    u64::from(partial_hash),
+                    current_array.data_block(target_index + offset),
+                    u64::from(hash),
                     old_writer,
                     old_data_block,
                     &mut entry_ptr,
@@ -1129,15 +1152,21 @@ where
         entry_ptr = EntryPtr::new(guard);
         position = 0;
         while entry_ptr.move_to_next(old_writer, guard) {
-            let (index, partial_hash) = if position < BUCKET_LEN * 2 {
-                rehash_data[position / BUCKET_LEN][position % BUCKET_LEN]
+            let (hash, offset) = if position < BUCKET_LEN * 2 {
+                (
+                    hash_data[position / BUCKET_LEN][position % BUCKET_LEN],
+                    offset_data[position / BUCKET_LEN][position % BUCKET_LEN],
+                )
             } else {
-                extended_data[position - BUCKET_LEN * 2]
+                (
+                    extended_hash_data[position - BUCKET_LEN * 2],
+                    extended_offset_data[position - BUCKET_LEN * 2],
+                )
             };
-            let bucket = current_array.bucket(target_index + usize::from(index));
+            let bucket = current_array.bucket(target_index + offset);
             bucket.extract_from(
-                current_array.data_block(target_index + usize::from(index)),
-                u64::from(partial_hash),
+                current_array.data_block(target_index + offset),
+                u64::from(hash),
                 old_writer,
                 old_data_block,
                 &mut entry_ptr,
@@ -1419,30 +1448,31 @@ where
         let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
         let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
-        let new_capacity = if estimated_num_entries > (capacity / 8) * 7 {
-            if capacity == self.maximum_capacity() {
-                // Do not resize if the capacity cannot be increased.
-                capacity
-            } else {
-                let mut new_capacity = capacity;
-                while new_capacity / 2 < estimated_num_entries {
+        let new_capacity =
+            if estimated_num_entries > (capacity / 8) * 7 || capacity < minimum_capacity {
+                if capacity == self.maximum_capacity() {
+                    // Do not resize if the capacity cannot be increased.
+                    capacity
+                } else {
                     // Double `new_capacity` until the expected load factor becomes ~0.43.
-                    if new_capacity == self.maximum_capacity() {
-                        break;
+                    let mut new_capacity = minimum_capacity.next_power_of_two().max(capacity);
+                    while new_capacity / 2 < estimated_num_entries {
+                        if new_capacity >= self.maximum_capacity() {
+                            break;
+                        }
+                        new_capacity *= 2;
                     }
-                    new_capacity *= 2;
+                    new_capacity
                 }
-                new_capacity
-            }
-        } else if estimated_num_entries < capacity / 8 {
-            // Shrink to fit.
-            estimated_num_entries
-                .max(minimum_capacity)
-                .max(BucketArray::<K, V, L, TYPE>::minimum_capacity())
-                .next_power_of_two()
-        } else {
-            capacity
-        };
+            } else if estimated_num_entries < capacity / 8 {
+                // Shrink to fit.
+                estimated_num_entries
+                    .max(minimum_capacity)
+                    .max(BucketArray::<K, V, L, TYPE>::minimum_capacity())
+                    .next_power_of_two()
+            } else {
+                capacity
+            };
 
         let try_resize = new_capacity != capacity;
         let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
@@ -1505,7 +1535,7 @@ where
             if let Some(allocated_array) = allocated_array {
                 // A new array was allocated.
                 self.bucket_array()
-                    .swap((Some(allocated_array), Tag::None), AcqRel);
+                    .swap((Some(allocated_array), Tag::None), Release);
             } else {
                 // Release the lock.
                 self.bucket_array()
@@ -1707,7 +1737,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
 
         let mut next_entry = None;
         hash_table
-            .for_each_writer_async(next_index, len, async_guard, |locked_bucket| {
+            .for_each_writer_async(next_index, len, async_guard, |locked_bucket, _| {
                 let guard = hash_table.prolonged_guard_ref(async_guard.guard());
                 *entry_ptr = EntryPtr::new(guard);
                 if entry_ptr.move_to_next(&locked_bucket.writer, guard) {
@@ -1750,7 +1780,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         }
 
         let mut next_entry = None;
-        hash_table.for_each_writer_sync(next_index, len, guard, |locked_bucket| {
+        hash_table.for_each_writer_sync(next_index, len, guard, |locked_bucket, _| {
             *entry_ptr = EntryPtr::new(guard);
             if entry_ptr.move_to_next(&locked_bucket.writer, guard) {
                 next_entry = Some(locked_bucket);
