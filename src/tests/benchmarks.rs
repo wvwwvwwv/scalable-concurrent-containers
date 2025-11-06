@@ -381,8 +381,8 @@ mod async_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, insert).await;
             println!(
                 "{}-insert-local-async: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
             assert_eq!($n.len(), $s * $t);
 
@@ -391,8 +391,8 @@ mod async_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, scan).await;
             println!(
                 "{}-scan-async: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
 
             // 3. read-local
@@ -400,8 +400,8 @@ mod async_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, read).await;
             println!(
                 "{}-read-local-async: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
 
             // 4. remove-local
@@ -409,8 +409,8 @@ mod async_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, remove).await;
             println!(
                 "{}-remove-local-async: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
             assert_eq!($n.len(), 0);
 
@@ -419,8 +419,8 @@ mod async_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, insert).await;
             println!(
                 "{}-insert-local-remote-async: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
             assert_eq!($n.len(), $s * $t);
 
@@ -429,8 +429,8 @@ mod async_benchmarks {
             let (duration, total_ops) = perform($t, $s * $t, &$n, mixed).await;
             println!(
                 "{}-mixed-async: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
             assert_eq!($n.len(), $s * $t);
 
@@ -439,8 +439,8 @@ mod async_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, remove).await;
             println!(
                 "{}-remove-local-remote-async: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
             assert_eq!($n.len(), 0);
         };
@@ -627,8 +627,8 @@ mod sync_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, insert);
             println!(
                 "{}-insert-local-sync: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
             assert_eq!($n.len(), $s * $t);
 
@@ -637,8 +637,8 @@ mod sync_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, scan);
             println!(
                 "{}-scan-sync: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
 
             // 3. read-local
@@ -646,8 +646,8 @@ mod sync_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, read);
             println!(
                 "{}-read-local-sync: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
 
             // 4. remove-local
@@ -655,8 +655,8 @@ mod sync_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, remove);
             println!(
                 "{}-remove-local-sync: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
             assert_eq!($n.len(), 0);
 
@@ -665,8 +665,8 @@ mod sync_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, insert);
             println!(
                 "{}-insert-local-remote-sync: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
             assert_eq!($n.len(), $s * $t);
 
@@ -675,8 +675,8 @@ mod sync_benchmarks {
             let (duration, total_ops) = perform($t, $s * $t, &$n, mixed);
             println!(
                 "{}-mixed-sync: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
             assert_eq!($n.len(), $s * $t);
 
@@ -685,8 +685,8 @@ mod sync_benchmarks {
             let (duration, total_ops) = perform($t, 0, &$n, remove);
             println!(
                 "{}-remove-local-remote-sync: {}, {duration:?}, {total_ops}",
-                $t,
-                stringify!($n)
+                stringify!($n),
+                $t
             );
             assert_eq!($n.len(), 0);
         };

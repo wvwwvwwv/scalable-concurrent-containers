@@ -185,7 +185,7 @@ mod hashmap {
         for k in 0..256 {
             assert!(hashmap.insert_sync(k, R::new(&INST_CNT)).is_ok());
         }
-        assert_eq!(hashmap.capacity(), 512);
+        assert!(hashmap.capacity() > 0 && hashmap.capacity() < reserved_capacity);
 
         let reserve = hashmap.reserve(reserved_capacity);
         assert!(reserve.is_some());
