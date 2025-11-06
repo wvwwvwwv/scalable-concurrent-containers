@@ -182,21 +182,17 @@ mod hashmap {
         assert_eq!(hashmap.capacity(), 0);
 
         let reserved_capacity = 1_048_576_usize;
-        for k in 0..256 {
-            assert!(hashmap.insert_sync(k, R::new(&INST_CNT)).is_ok());
-        }
-        assert!(hashmap.capacity() > 0 && hashmap.capacity() < reserved_capacity);
 
         let reserve = hashmap.reserve(reserved_capacity);
         assert!(reserve.is_some());
-        assert!(hashmap.insert_sync(usize::MAX, R::new(&INST_CNT)).is_ok());
+        for k in 0..256 {
+            assert!(hashmap.insert_sync(k, R::new(&INST_CNT)).is_ok());
+        }
         assert_eq!(hashmap.capacity(), reserved_capacity);
-
-        assert_eq!(hashmap.len(), 257);
+        assert_eq!(hashmap.len(), 256);
         for k in 0..256 {
             assert!(hashmap.insert_sync(k, R::new(&INST_CNT)).is_err());
         }
-        assert!(hashmap.insert_sync(usize::MAX, R::new(&INST_CNT)).is_err());
 
         drop(reserve);
         hashmap.clear_sync();

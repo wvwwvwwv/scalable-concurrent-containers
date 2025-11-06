@@ -1449,7 +1449,7 @@ where
         let sample_size = current_array.full_sample_size();
         let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
         let new_capacity =
-            if estimated_num_entries > (capacity / 8) * 7 || capacity < minimum_capacity {
+            if capacity < minimum_capacity || estimated_num_entries > (capacity / 8) * 7 {
                 if capacity == self.maximum_capacity() {
                     // Do not resize if the capacity cannot be increased.
                     capacity
