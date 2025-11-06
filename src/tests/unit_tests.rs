@@ -174,6 +174,7 @@ mod hashmap {
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn capacity_sync() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
