@@ -60,8 +60,6 @@ jobs:
           rustup component add miri --toolchain nightly
       - name: Miri
         run: cargo +nightly miri test
-      - name: Loom
-        run: RUST_BACKTRACE=1 cargo test --features loom --release --lib -- --nocapture
   check-misc:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -81,11 +79,15 @@ jobs:
       - name: MSRV
         run: cargo msrv verify
       - name: Format
-        run: cargo fmt --check;
-          cargo fmt -p examples --check;
-          cargo fmt -p extended_tests --check
+        run: cargo fmt --check
       - name: Doc
         run: cargo doc --document-private-items
+      - name: Examples
+        run: cargo fmt -p examples --check
+      - name: OOM
+        run: cargo fmt -p extended_tests --check
+      - name: Loom
+        run: RUST_BACKTRACE=1 cargo test --features loom --release --lib -- --nocapture
       - name: Equivalent
         run: cargo test --features equivalent --release --lib -- --nocapture
       - name: Serde

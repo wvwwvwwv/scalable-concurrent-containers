@@ -6,6 +6,7 @@
 3.3.6
 
 * Simplify `Hash*` capacity management.
+* Fix the `loom` feature to pass the proper loom option to `saa`.
 
 3.3.5
 
