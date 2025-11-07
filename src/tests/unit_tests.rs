@@ -56,7 +56,7 @@ mod common {
 
 mod hashmap {
     use std::collections::BTreeSet;
-    use std::hash::{Hash, Hasher};
+    use std::hash::{BuildHasher, Hash, Hasher, RandomState};
     use std::panic::{RefUnwindSafe, UnwindSafe};
     use std::rc::Rc;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -75,7 +75,7 @@ mod hashmap {
     use crate::HashMap;
     use crate::async_helper::AsyncGuard;
     use crate::hash_map::{self, Entry, ReplaceResult, Reserve};
-    use crate::hash_table::bucket::{MAP, Writer};
+    use crate::hash_table::bucket::{BUCKET_LEN, MAP, Writer};
 
     static_assertions::assert_eq_size!(Option<Writer<usize, usize, (), MAP>>, usize);
     static_assertions::assert_impl_all!(AsyncGuard: Send, Sync);
@@ -126,6 +126,32 @@ mod hashmap {
     impl PartialEq for Data {
         fn eq(&self, other: &Self) -> bool {
             self.data == other.data
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    #[test]
+    fn sampling() {
+        let build_hasher = RandomState::new();
+        for b in [
+            2, 8, 32, 128, 512, 2048, 8192, 32768, 131_072, 524_288, 2_097_152, 8_388_608,
+        ] {
+            let mut buckets = vec![0; b];
+            for key in 0..b * BUCKET_LEN {
+                #[allow(clippy::cast_possible_truncation)]
+                let hash = build_hasher.hash_one(key) as usize;
+                buckets[hash % b] += 1;
+            }
+            let mut s = 1;
+            while s < b {
+                let estimation: usize = buckets.iter().take(s).sum::<usize>() * (b / s);
+                println!(
+                    "Num buckets: {b}, sample size: {s}, entries: {}, estimation: {estimation}, accuracy: {:.4}%",
+                    b * BUCKET_LEN,
+                    (estimation as f64 / (b * BUCKET_LEN) as f64) * 100.0
+                );
+                s *= 2;
+            }
         }
     }
 

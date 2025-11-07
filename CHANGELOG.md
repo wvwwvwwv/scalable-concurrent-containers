@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.3.7
+
+* Improve sampling accuracy in `Hash*` containers.
+
 3.3.6
 
 * Simplify `Hash*` capacity management.
