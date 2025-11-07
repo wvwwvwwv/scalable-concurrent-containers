@@ -65,7 +65,7 @@ struct Storage<T, const ARRAY_LEN: usize> {
 }
 
 impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
-    /// Creates a new [`Bag`].
+    /// Creates an empty [`Bag`].
     ///
     /// # Panics
     ///
@@ -78,13 +78,26 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     ///
     /// let bag: Bag<usize, 16> = Bag::new();
     /// ```
+    #[cfg(not(feature = "loom"))]
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        assert!(ARRAY_LEN <= DEFAULT_ARRAY_LEN);
+        Self {
+            primary_storage: Storage::new(),
+            stack: Stack::new(),
+        }
+    }
+
+    /// Creates an empty [`Bag`].
+    #[cfg(feature = "loom")]
     #[inline]
     #[must_use]
     pub fn new() -> Self {
         assert!(ARRAY_LEN <= DEFAULT_ARRAY_LEN);
         Self {
             primary_storage: Storage::new(),
-            stack: Stack::default(),
+            stack: Stack::new(),
         }
     }
 

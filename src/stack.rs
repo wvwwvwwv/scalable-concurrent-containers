@@ -100,6 +100,34 @@ impl<T: 'static> Stack<T> {
 }
 
 impl<T> Stack<T> {
+    /// Creates an empty [`Stack`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Stack;
+    ///
+    /// let stack: Stack<usize> = Stack::new();
+    ///```
+    #[cfg(not(feature = "loom"))]
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            newest: AtomicShared::null(),
+        }
+    }
+
+    /// Creates an empty [`Stack`].
+    #[cfg(feature = "loom")]
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            newest: AtomicShared::null(),
+        }
+    }
+
     /// Pushes an instance of `T` without checking the lifetime of `T`.
     ///
     /// Returns a [`Shared`] holding a strong reference to the newly pushed entry.
@@ -476,9 +504,7 @@ impl<T: Debug> Debug for Stack<T> {
 impl<T> Default for Stack<T> {
     #[inline]
     fn default() -> Self {
-        Self {
-            newest: AtomicShared::default(),
-        }
+        Self::new()
     }
 }
 

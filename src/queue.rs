@@ -109,6 +109,36 @@ impl<T: 'static> Queue<T> {
 }
 
 impl<T> Queue<T> {
+    /// Creates an empty [`Queue`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Queue;
+    ///
+    /// let queue: Queue<usize> = Queue::new();
+    ///```
+    #[cfg(not(feature = "loom"))]
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            oldest: AtomicShared::null(),
+            newest: AtomicShared::null(),
+        }
+    }
+
+    /// Creates an empty [`Queue`].
+    #[cfg(feature = "loom")]
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            oldest: AtomicShared::null(),
+            newest: AtomicShared::null(),
+        }
+    }
+
     /// Pushes an instance of `T` without checking the lifetime of `T`.
     ///
     /// Returns a [`Shared`] holding a strong reference to the newly pushed entry.
@@ -490,10 +520,7 @@ impl<T: Debug> Debug for Queue<T> {
 impl<T> Default for Queue<T> {
     #[inline]
     fn default() -> Self {
-        Self {
-            oldest: AtomicShared::default(),
-            newest: AtomicShared::default(),
-        }
+        Self::new()
     }
 }
 
