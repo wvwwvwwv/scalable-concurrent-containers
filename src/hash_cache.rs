@@ -150,7 +150,8 @@ where
 
     /// Creates an empty [`HashCache`] with the specified capacity and [`BuildHasher`].
     ///
-    /// The actual capacity is equal to or greater than the specified capacity.
+    /// The actual capacity is equal to or greater than `minimum_capacity` unless it is greater than
+    /// `1 << (usize::BITS - 1)`.
     ///
     /// # Examples
     ///
@@ -1209,9 +1210,8 @@ impl<K, V> HashCache<K, V, RandomState> {
 
     /// Creates an empty [`HashCache`] with the specified capacity.
     ///
-    /// The supplied minimum and maximum capacity values are adjusted to power-of-two values equal
-    /// to or larger than the provided values and `64` with one exception; if `0` is specified as
-    /// the minimum capacity, the minimum capacity of the `HashCache` becomes `0`.
+    /// The actual capacity is equal to or greater than `minimum_capacity` unless it is greater than
+    /// `1 << (usize::BITS - 1)`.
     ///
     /// # Examples
     ///

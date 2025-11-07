@@ -70,7 +70,8 @@ where
 
     /// Creates an empty [`HashSet`] with the specified capacity and [`BuildHasher`].
     ///
-    /// The actual capacity is equal to or greater than the specified capacity.
+    /// The actual capacity is equal to or greater than `capacity` unless it is greater than
+    /// `1 << (usize::BITS - 1)`.
     ///
     /// # Examples
     ///
@@ -827,7 +828,8 @@ impl<K: Eq + Hash> HashSet<K, RandomState> {
 
     /// Creates an empty [`HashSet`] with the specified capacity.
     ///
-    /// The actual capacity is equal to or greater than the specified capacity.
+    /// The actual capacity is equal to or greater than `capacity` unless it is greater than
+    /// `1 << (usize::BITS - 1)`.
     ///
     /// # Examples
     ///

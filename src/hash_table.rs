@@ -63,23 +63,23 @@ where
     /// Returns the maximum capacity.
     ///
     /// The maximum capacity must be a power of `2`.
-    fn maximum_capacity(&self) -> usize;
+    fn maximum_capacity(&self) -> usize {
+        1_usize << (usize::BITS - 1)
+    }
 
     /// Reserves the specified capacity.
     ///
-    /// Returns the actually allocated capacity.
+    /// Returns the actually allocated capacity. Return `0` if the sum of the current minimum
+    /// capacity and the additional capacity exceeds [`Self::maximum_capacity`].
     fn reserve_capacity(&self, additional_capacity: usize) -> usize {
         let mut current_minimum_capacity = self.minimum_capacity().load(Relaxed);
         loop {
-            let Some(new_minimum_capacity) =
-                current_minimum_capacity.checked_add(additional_capacity)
-            else {
+            if additional_capacity > self.maximum_capacity() - current_minimum_capacity {
                 return 0;
-            };
-
+            }
             match self.minimum_capacity().compare_exchange_weak(
                 current_minimum_capacity,
-                new_minimum_capacity,
+                additional_capacity + current_minimum_capacity,
                 Relaxed,
                 Relaxed,
             ) {
@@ -88,7 +88,7 @@ where
                     if let Some(current_array) = self.bucket_array().load(Acquire, &guard).as_ref()
                     {
                         if !current_array.has_old_array() {
-                            self.try_resize(current_array, 0, &guard);
+                            self.try_resize(current_array, &guard);
                         }
                     }
                     return additional_capacity;
@@ -137,26 +137,28 @@ where
     }
 
     /// Returns the number of entries.
+    ///
+    /// In case there are more than `usize::MAX` entries, it returns `usize::MAX`.
     #[inline]
     fn num_entries(&self, guard: &Guard) -> usize {
-        let mut num_entries = 0;
+        let mut num_entries: usize = 0;
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let old_array_ptr = current_array.old_array(guard);
             if let Some(old_array) = old_array_ptr.as_ref() {
                 if !self.incremental_rehash_sync::<true>(current_array, guard) {
                     for i in 0..old_array.len() {
-                        num_entries += old_array.bucket(i).len();
+                        num_entries = num_entries.saturating_add(old_array.bucket(i).len());
                     }
                 }
             }
             for i in 0..current_array.len() {
-                num_entries += current_array.bucket(i).len();
+                num_entries = num_entries.saturating_add(current_array.bucket(i).len());
             }
             if num_entries == 0
                 && self.minimum_capacity().load(Relaxed) == 0
                 && !current_array.has_old_array()
             {
-                self.try_resize(current_array, 0, guard);
+                self.try_resize(current_array, guard);
             }
         }
         num_entries
@@ -185,7 +187,7 @@ where
         }
     }
 
-    /// Returns `true` if the number of entries is non-zero.
+    /// Returns `true` if a valid entry is found.
     fn has_entry(&self, guard: &Guard) -> bool {
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let old_array_ptr = current_array.old_array(guard);
@@ -204,7 +206,7 @@ where
                 }
             }
             if self.minimum_capacity().load(Relaxed) == 0 && !current_array.has_old_array() {
-                self.try_resize(current_array, 0, guard);
+                self.try_resize(current_array, guard);
             }
         }
         false
@@ -1370,7 +1372,7 @@ where
                 num_entries > threshold
             })
         {
-            self.try_resize(current_array, index, guard);
+            self.try_resize(current_array, guard);
         }
     }
 
@@ -1386,9 +1388,8 @@ where
             return;
         }
 
-        if current_array.num_slots() > self.minimum_capacity().load(Relaxed).next_power_of_two()
-            || TYPE == INDEX
-        {
+        let minimum_capacity = self.minimum_capacity().load(Relaxed);
+        if TYPE == INDEX || current_array.num_slots() > minimum_capacity {
             let sample_size = current_array.sample_size();
 
             // Try to shrink if the estimated load factor is less than `1/16`.
@@ -1408,25 +1409,20 @@ where
                 }
                 if TYPE == INDEX && bucket.need_rebuild() {
                     if num_buckets_to_rebuild >= rebuild_threshold {
-                        self.try_resize(current_array, index, guard);
+                        self.try_resize(current_array, guard);
                         return;
                     }
                     num_buckets_to_rebuild += 1;
                 }
             }
             if TYPE != INDEX || num_entries <= shrink_threshold {
-                self.try_resize(current_array, index, guard);
+                self.try_resize(current_array, guard);
             }
         }
     }
 
     /// Tries to resize the array.
-    fn try_resize(
-        &self,
-        sampled_array: &BucketArray<K, V, L, TYPE>,
-        sampling_index: usize,
-        guard: &Guard,
-    ) {
+    fn try_resize(&self, sampled_array: &BucketArray<K, V, L, TYPE>, guard: &Guard) {
         let current_array_ptr = self.bucket_array().load(Acquire, guard);
         if current_array_ptr.tag() != Tag::None {
             // Another thread is currently allocating a new bucket array.
@@ -1447,7 +1443,7 @@ where
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
-        let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
+        let estimated_num_entries = Self::sample(current_array, 0, sample_size);
         let new_capacity =
             if capacity < minimum_capacity || estimated_num_entries > (capacity / 8) * 7 {
                 if capacity == self.maximum_capacity() {
@@ -1476,9 +1472,8 @@ where
 
         let try_resize = new_capacity != capacity;
         let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
-        let try_rebuild = TYPE == INDEX
-            && !try_resize
-            && Self::check_rebuild(current_array, sampling_index, sample_size);
+        let try_rebuild =
+            TYPE == INDEX && !try_resize && Self::check_rebuild(current_array, 0, sample_size);
 
         if !try_resize && !try_drop_table && !try_rebuild {
             // Nothing to do.

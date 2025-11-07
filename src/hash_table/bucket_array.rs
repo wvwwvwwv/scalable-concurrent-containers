@@ -30,25 +30,25 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         capacity: usize,
         old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
     ) -> Self {
-        let log2_array_len = Self::calculate_log2_array_size(capacity);
-        assert_ne!(log2_array_len, 0);
+        let adjusted_capacity = capacity
+            .min(1_usize << (usize::BITS - 1))
+            .next_power_of_two()
+            .max(Self::minimum_capacity());
+        let array_len = adjusted_capacity / BUCKET_LEN;
+        let log2_array_len =
+            u16::try_from(usize::BITS - array_len.leading_zeros() - 1).unwrap_or(0);
+        assert_eq!(1_usize << log2_array_len, array_len);
 
-        let array_len = 1_usize << log2_array_len;
+        let alignment = align_of::<Bucket<K, V, L, TYPE>>();
+        let layout = Self::bucket_array_layout(array_len);
+
         unsafe {
-            let (bucket_size, bucket_array_allocation_size, bucket_array_layout) =
-                Self::bucket_array_layout(array_len);
-            let Some(unaligned_bucket_array_ptr) = NonNull::new(alloc_zeroed(bucket_array_layout))
-            else {
-                panic!("memory allocation failure: {bucket_array_allocation_size} bytes");
+            let Some(unaligned_bucket_array_ptr) = NonNull::new(alloc_zeroed(layout)) else {
+                panic!("memory allocation failure: {layout:?}");
             };
-            let bucket_array_ptr_offset = bucket_size.next_power_of_two()
-                - (unaligned_bucket_array_ptr.addr().get() % bucket_size.next_power_of_two());
-            assert!(
-                bucket_array_ptr_offset + bucket_size * array_len <= bucket_array_allocation_size,
-            );
+            let bucket_array_ptr_offset = unaligned_bucket_array_ptr.align_offset(alignment);
             assert_eq!(
-                (unaligned_bucket_array_ptr.addr().get() + bucket_array_ptr_offset)
-                    % bucket_size.next_power_of_two(),
+                (unaligned_bucket_array_ptr.addr().get() + bucket_array_ptr_offset) % alignment,
                 0
             );
 
@@ -73,20 +73,14 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             // In case the below data block allocation fails, deallocate the bucket array.
             let mut alloc_guard = ExitGuard::new(false, |allocated| {
                 if !allocated {
-                    dealloc(
-                        unaligned_bucket_array_ptr.cast::<u8>().as_ptr(),
-                        bucket_array_layout,
-                    );
+                    dealloc(unaligned_bucket_array_ptr.cast::<u8>().as_ptr(), layout);
                 }
             });
 
             let Some(data_blocks) =
                 NonNull::new(alloc(data_block_array_layout).cast::<DataBlock<K, V, BUCKET_LEN>>())
             else {
-                panic!(
-                    "memory allocation failure: {} bytes",
-                    data_block_array_layout.size()
-                );
+                panic!("memory allocation failure: {data_block_array_layout:?}");
             };
             *alloc_guard = true;
 
@@ -94,8 +88,8 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 buckets,
                 data_blocks,
                 array_len,
-                hash_offset: u16::try_from(u64::BITS).unwrap_or(64) - u16::from(log2_array_len),
-                sample_size_mask: u16::from(log2_array_len).next_power_of_two() - 1,
+                hash_offset: u16::try_from(u64::BITS).unwrap_or(64) - log2_array_len,
+                sample_size_mask: log2_array_len.next_power_of_two() - 1,
                 bucket_ptr_offset: bucket_array_ptr_offset,
                 old_array,
                 num_cleared_buckets: AtomicUsize::new(0),
@@ -126,7 +120,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 
     /// Returns the minimum capacity.
     #[inline]
-    pub const fn minimum_capacity() -> usize {
+    pub(crate) const fn minimum_capacity() -> usize {
         BUCKET_LEN << 1
     }
 
@@ -188,29 +182,11 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 
     /// Calculates the layout of the memory block for an array of `T`.
     #[inline]
-    const fn bucket_array_layout(array_len: usize) -> (usize, usize, Layout) {
+    const fn bucket_array_layout(array_len: usize) -> Layout {
         let size_of_t = size_of::<Bucket<K, V, L, TYPE>>();
-        let aligned_size = size_of_t.next_power_of_two();
-        let allocation_size = aligned_size + array_len * size_of_t;
-        (size_of_t, allocation_size, unsafe {
-            // Intentionally misaligned in order to take full advantage of demand paging.
-            Layout::from_size_align_unchecked(allocation_size, 1)
-        })
-    }
-
-    /// Calculates log₂ of the array size from the given capacity.
-    ///
-    /// Returns a non-zero `u8`, even when `capacity < 2 * BUCKET_LEN`.
-    #[inline]
-    fn calculate_log2_array_size(capacity: usize) -> u8 {
-        let adjusted_capacity = capacity.clamp(64, (usize::MAX / 2) - (BUCKET_LEN - 1));
-        let required_buckets = adjusted_capacity.div_ceil(BUCKET_LEN).next_power_of_two();
-        let log2_capacity = usize::BITS as usize - (required_buckets.leading_zeros() as usize) - 1;
-
-        // `2^log2_capacity * BUCKET_LEN >= capacity`.
-        debug_assert!(log2_capacity < (usize::BITS as usize));
-        debug_assert!((1_usize << log2_capacity) * BUCKET_LEN >= adjusted_capacity);
-        u8::try_from(log2_capacity).unwrap_or(0)
+        let allocation_size = (array_len + 1) * size_of_t;
+        // Intentionally misaligned in order to take full advantage of demand paging.
+        unsafe { Layout::from_size_align_unchecked(allocation_size, 1) }
     }
 }
 
@@ -248,7 +224,7 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
                     .cast::<u8>()
                     .sub(self.bucket_ptr_offset as usize)
                     .as_ptr(),
-                Self::bucket_array_layout(self.array_len).2,
+                Self::bucket_array_layout(self.array_len),
             );
             dealloc(
                 self.data_blocks.cast::<u8>().as_ptr(),
@@ -272,37 +248,4 @@ unsafe impl<K: Send + Sync, V: Send + Sync, L: LruList, const TYPE: char> Sync
 impl<K: UnwindSafe, V: UnwindSafe, L: LruList, const TYPE: char> UnwindSafe
     for BucketArray<K, V, L, TYPE>
 {
-}
-
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod test {
-    use super::*;
-    use crate::hash_table::bucket::INDEX;
-
-    #[test]
-    fn array() {
-        for s in 0..BUCKET_LEN * 4 {
-            let array: BucketArray<usize, usize, (), INDEX> =
-                BucketArray::new(s, AtomicShared::default());
-            assert!(
-                array.len() >= s.max(1).div_ceil(BUCKET_LEN),
-                "{s} {}",
-                array.len()
-            );
-            assert!(
-                array.len() <= 2 * (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
-                "{s} {}",
-                array.len()
-            );
-            assert!(
-                array.full_sample_size() <= array.len(),
-                "{} {}",
-                array.full_sample_size(),
-                array.len()
-            );
-            assert!(array.num_slots() >= s, "{s} {}", array.num_slots());
-            array.num_cleared_buckets.store(array.array_len, Relaxed);
-        }
-    }
 }

@@ -181,6 +181,11 @@ mod hashmap {
 
         let hashmap: HashMap<usize, R> = HashMap::default();
         assert_eq!(hashmap.capacity(), 0);
+        assert!(
+            hashmap
+                .reserve((1_usize << (usize::BITS - 1)) + 1)
+                .is_none()
+        );
 
         let reserved_capacity = 1_048_576_usize;
 

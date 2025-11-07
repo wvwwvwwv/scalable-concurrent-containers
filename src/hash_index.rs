@@ -156,7 +156,8 @@ where
 
     /// Creates an empty [`HashIndex`] with the specified capacity and [`BuildHasher`].
     ///
-    /// The actual capacity is equal to or greater than the specified capacity.
+    /// The actual capacity is equal to or greater than `capacity` unless it is greater than
+    /// `1 << (usize::BITS - 1)`.
     ///
     /// # Examples
     ///
@@ -1280,7 +1281,8 @@ where
 
     /// Creates an empty [`HashIndex`] with the specified capacity.
     ///
-    /// The actual capacity is equal to or greater than the specified capacity.
+    /// The actual capacity is equal to or greater than `capacity` unless it is greater than
+    /// `1 << (usize::BITS - 1)`.
     ///
     /// # Examples
     ///
@@ -1402,11 +1404,6 @@ where
     #[inline]
     fn minimum_capacity(&self) -> &AtomicUsize {
         &self.minimum_capacity
-    }
-
-    #[inline]
-    fn maximum_capacity(&self) -> usize {
-        1_usize << (usize::BITS - 1)
     }
 }
 
