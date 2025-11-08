@@ -138,6 +138,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) const fn sample_size(&self) -> usize {
+        // `Log2(array_len)`: if `array_len` is sufficiently large, expected error is `~3%`.
         (self.sample_size_mask + 1) as usize
     }
 
@@ -164,7 +165,8 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) fn full_sample_size(&self) -> usize {
-        (self.sample_size() * self.sample_size()).min(self.len())
+        // `Log2(array_len) * 2`: if `array_len` is sufficiently large, expected error is `~2%`.
+        self.sample_size() * 2
     }
 
     /// Returns `true` if the old array exists.

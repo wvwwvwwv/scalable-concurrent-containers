@@ -1459,7 +1459,7 @@ where
                     // Do not resize if the capacity cannot be increased.
                     capacity
                 } else {
-                    // Double `new_capacity` until the expected load factor becomes ~0.43.
+                    // Double `new_capacity` until the expected load factor becomes `~0.4`.
                     let mut new_capacity = minimum_capacity.next_power_of_two().max(capacity);
                     while new_capacity / 2 < estimated_num_entries {
                         if new_capacity >= self.maximum_capacity() {

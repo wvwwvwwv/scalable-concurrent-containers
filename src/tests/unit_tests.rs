@@ -96,6 +96,13 @@ mod experiments {
                 b * BUCKET_LEN,
                 (to_f64(estimation) / to_f64(b * BUCKET_LEN)) * 100.0
             );
+            let estimation: usize = buckets.iter().take(c * 2).sum::<usize>() * (b / (c * 2));
+            println!(
+                "(TEST - Log2({b}) * 2) Num buckets: {b}, sample size: {}, entries: {}, estimation: {estimation}, accuracy: {:.4}%",
+                c * 2,
+                b * BUCKET_LEN,
+                (to_f64(estimation) / to_f64(b * BUCKET_LEN)) * 100.0
+            );
         }
     }
 
