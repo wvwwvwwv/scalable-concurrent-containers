@@ -1468,7 +1468,7 @@ where
                 }
             } else if estimated_num_entries <= capacity / 8 {
                 // Shrink to fit if the estimated load factor is equal to or less than `1/8`.
-                estimated_num_entries
+                (estimated_num_entries * 2)
                     .max(minimum_capacity)
                     .max(BucketArray::<K, V, L, TYPE>::minimum_capacity())
                     .next_power_of_two()
