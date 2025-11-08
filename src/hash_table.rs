@@ -1443,9 +1443,6 @@ where
             return;
         }
 
-        // If the estimated load factor is greater than `7/8`, then the hash table grows. On the
-        // other hand, if the estimated load factor is less than `1/8`, then the hash table shrinks
-        // to fit.
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
