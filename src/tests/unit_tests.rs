@@ -92,13 +92,13 @@ mod experiments {
             let c = b.trailing_zeros().next_power_of_two() as usize;
             let estimation: usize = buckets.iter().take(c).sum::<usize>() * (b / c);
             println!(
-                "(TEST - Log2({b})) Num buckets: {b}, sample size: {c}, entries: {}, estimation: {estimation}, accuracy: {:.4}%",
+                "(Log2({b})) Num buckets: {b}, sample size: {c}, entries: {}, estimation: {estimation}, accuracy: {:.4}%",
                 b * BUCKET_LEN,
                 (to_f64(estimation) / to_f64(b * BUCKET_LEN)) * 100.0
             );
             let estimation: usize = buckets.iter().take(c * 2).sum::<usize>() * (b / (c * 2));
             println!(
-                "(TEST - Log2({b}) * 2) Num buckets: {b}, sample size: {}, entries: {}, estimation: {estimation}, accuracy: {:.4}%",
+                "(Log2({b}) * 2) Num buckets: {b}, sample size: {}, entries: {}, estimation: {estimation}, accuracy: {:.4}%",
                 c * 2,
                 b * BUCKET_LEN,
                 (to_f64(estimation) / to_f64(b * BUCKET_LEN)) * 100.0
