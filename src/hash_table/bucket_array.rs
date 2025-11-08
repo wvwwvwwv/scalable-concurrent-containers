@@ -35,8 +35,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             .next_power_of_two()
             .max(Self::minimum_capacity());
         let array_len = adjusted_capacity / BUCKET_LEN;
-        let log2_array_len =
-            u16::try_from(usize::BITS - array_len.leading_zeros() - 1).unwrap_or(0);
+        let log2_array_len = u16::try_from(array_len.trailing_zeros()).unwrap_or(0);
         assert_eq!(1_usize << log2_array_len, array_len);
 
         let alignment = align_of::<Bucket<K, V, L, TYPE>>();
@@ -58,17 +57,17 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 .cast::<Bucket<K, V, L, TYPE>>();
             let bucket_array_ptr_offset = u16::try_from(bucket_array_ptr_offset).unwrap_or(0);
 
-            let data_block_array_layout = Layout::from_size_align(
-                size_of::<DataBlock<K, V, BUCKET_LEN>>() * array_len,
-                align_of::<[DataBlock<K, V, BUCKET_LEN>; 0]>(),
-            )
-            .unwrap();
-
             #[cfg(feature = "loom")]
             for i in 0..array_len {
                 // `loom` types need proper initialization.
                 buckets.add(i).write(Bucket::new());
             }
+
+            let data_block_array_layout = Layout::from_size_align(
+                size_of::<DataBlock<K, V, BUCKET_LEN>>() * array_len,
+                align_of::<[DataBlock<K, V, BUCKET_LEN>; 0]>(),
+            )
+            .unwrap();
 
             // In case the below data block allocation fails, deallocate the bucket array.
             let mut alloc_guard = ExitGuard::new(false, |allocated| {
@@ -139,6 +138,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) const fn sample_size(&self) -> usize {
+        // `Log2(array_len)`: if `array_len` is sufficiently large, expected error is `~3%`.
         (self.sample_size_mask + 1) as usize
     }
 
@@ -165,7 +165,8 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) fn full_sample_size(&self) -> usize {
-        (self.sample_size() * self.sample_size()).min(self.len())
+        // `Log2(array_len) * 2`: if `array_len` is sufficiently large, expected error is `~2%`.
+        self.sample_size() * 2
     }
 
     /// Returns `true` if the old array exists.

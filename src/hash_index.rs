@@ -11,7 +11,7 @@ use std::ptr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicU8, AtomicUsize};
 
-use sdd::{AtomicShared, Epoch, Guard, Shared, Tag};
+use sdd::{AtomicShared, Epoch, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
 use super::hash_table::HashTable;
@@ -1200,18 +1200,19 @@ where
     #[inline]
     fn reclaim_memory(&self, guard: &Guard) {
         let head_ptr = self.garbage_chain.load(Acquire, guard);
-        if head_ptr.is_null() {
-            return;
+        if !head_ptr.is_null() {
+            self.dealloc_garbage(head_ptr, guard);
         }
+    }
+
+    /// Deallocates the supplied bucket array.
+    fn dealloc_garbage(&self, ptr: Ptr<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
         let garbage_epoch = self.garbage_epoch.load(Acquire);
         if Epoch::try_from(garbage_epoch).is_ok_and(|e| !e.in_same_generation(guard.epoch())) {
-            if let Ok((mut garbage_head, _)) = self.garbage_chain.compare_exchange(
-                head_ptr,
-                (None, Tag::None),
-                Acquire,
-                Relaxed,
-                guard,
-            ) {
+            if let Ok((mut garbage_head, _)) =
+                self.garbage_chain
+                    .compare_exchange(ptr, (None, Tag::None), Acquire, Relaxed, guard)
+            {
                 while let Some(garbage_bucket_array) = garbage_head {
                     garbage_head = garbage_bucket_array
                         .bucket_link()

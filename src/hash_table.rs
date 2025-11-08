@@ -213,6 +213,8 @@ where
     }
 
     /// Estimates the number of entries by sampling the specified number of buckets.
+    ///
+    /// The number of entries is overestimated if buckets contain overflow buckets.
     #[inline]
     fn sample(
         current_array: &BucketArray<K, V, L, TYPE>,
@@ -221,7 +223,11 @@ where
     ) -> usize {
         let mut num_entries = 0;
         for i in sampling_index..(sampling_index + sample_size) {
-            num_entries += current_array.bucket(i % current_array.len()).len();
+            let len = current_array.bucket(i % current_array.len()).len();
+            num_entries += len;
+            if len > BUCKET_LEN {
+                num_entries += 1;
+            }
         }
         num_entries * (current_array.len() / sample_size)
     }
@@ -1362,8 +1368,8 @@ where
 
         let sample_size = current_array.sample_size();
 
-        // Try to grow if the estimated load factor is greater than `15/16`.
-        let threshold = sample_size * (BUCKET_LEN / 16) * 15;
+        // Try to grow if the estimated load factor is greater than `13/16`.
+        let threshold = sample_size * (BUCKET_LEN / 16) * 13;
         if num_entries > threshold
             || (1..sample_size).any(|i| {
                 num_entries += current_array
@@ -1392,15 +1398,15 @@ where
         if TYPE == INDEX || current_array.num_slots() > minimum_capacity {
             let sample_size = current_array.sample_size();
 
-            // Try to shrink if the estimated load factor is less than `1/16`.
-            let shrink_threshold = sample_size * BUCKET_LEN / 16;
+            // Try to shrink if the estimated load factor is less than `1/8`.
+            let shrink_threshold = sample_size * BUCKET_LEN / 8;
             let rebuild_threshold = sample_size / 2;
             let mut num_entries = 0;
             let mut num_buckets_to_rebuild = 0;
             for i in 0..sample_size {
                 let bucket = current_array.bucket((index + i) % current_array.len());
                 num_entries += bucket.len();
-                if num_entries > shrink_threshold
+                if num_entries >= shrink_threshold
                     && (TYPE != INDEX
                         || num_buckets_to_rebuild + (sample_size - i) < rebuild_threshold)
                 {
@@ -1437,20 +1443,20 @@ where
             return;
         }
 
-        // If the estimated load factor is greater than `7/8`, then the hash table grows. On the
-        // other hand, if the estimated load factor is less than `1/8`, then the hash table shrinks
-        // to fit.
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
         let estimated_num_entries = Self::sample(current_array, 0, sample_size);
+
         let new_capacity =
-            if capacity < minimum_capacity || estimated_num_entries > (capacity / 8) * 7 {
+            if capacity < minimum_capacity || estimated_num_entries >= (capacity / 16) * 13 {
+                // Double the capacity if the estimated load factor is equal to or greater than
+                // `13/16`; `~10%` of buckets are expected to have overflow buckets.
                 if capacity == self.maximum_capacity() {
                     // Do not resize if the capacity cannot be increased.
                     capacity
                 } else {
-                    // Double `new_capacity` until the expected load factor becomes ~0.43.
+                    // Double `new_capacity` until the expected load factor becomes `~0.4`.
                     let mut new_capacity = minimum_capacity.next_power_of_two().max(capacity);
                     while new_capacity / 2 < estimated_num_entries {
                         if new_capacity >= self.maximum_capacity() {
@@ -1460,9 +1466,9 @@ where
                     }
                     new_capacity
                 }
-            } else if estimated_num_entries < capacity / 8 {
-                // Shrink to fit.
-                estimated_num_entries
+            } else if estimated_num_entries <= capacity / 8 {
+                // Shrink to fit if the estimated load factor is equal to or less than `1/8`.
+                (estimated_num_entries * 2)
                     .max(minimum_capacity)
                     .max(BucketArray::<K, V, L, TYPE>::minimum_capacity())
                     .next_power_of_two()
