@@ -422,7 +422,7 @@ assert!(head.next_ptr(Relaxed, &guard).is_null());
 
 ### [`HashMap`](#hashmap) Tail Latency
 
-The expected tail latency of a distribution of latencies of 1048576 insertion operations (`K = u64, V = u64`) ranges from 160 microseconds to 180 microseconds on Apple M4 Pro.
+The expected tail latency of a distribution of latencies of 1048576 insertion operations (`K = u64, V = u64`) is less than 50 microseconds on Apple M4 Pro.
 
 ### [`HashMap`](#hashmap) and [`HashIndex`](#hashindex) Throughput
 

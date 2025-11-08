@@ -15,8 +15,8 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
     buckets: NonNull<Bucket<K, V, L, TYPE>>,
     data_blocks: NonNull<DataBlock<K, V, BUCKET_LEN>>,
     array_len: usize,
-    log2_array_len: u16,
     hash_offset: u16,
+    sample_size_mask: u16,
     bucket_ptr_offset: u16,
     old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
     num_cleared_buckets: AtomicUsize,
@@ -87,8 +87,8 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 buckets,
                 data_blocks,
                 array_len,
-                log2_array_len,
                 hash_offset: u16::try_from(u64::BITS).unwrap_or(64) - log2_array_len,
+                sample_size_mask: log2_array_len.next_power_of_two() - 1,
                 bucket_ptr_offset: bucket_array_ptr_offset,
                 old_array,
                 num_cleared_buckets: AtomicUsize::new(0),
@@ -129,11 +129,24 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         &self.num_cleared_buckets
     }
 
+    /// Checks if the bucket is allowed to initiate sampling.
+    #[inline]
+    pub(crate) const fn initiate_sampling(&self, index: usize) -> bool {
+        (index & self.sample_size_mask as usize) == 0
+    }
+
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) const fn sample_size(&self) -> usize {
         // `Log2(array_len)`: if `array_len` is sufficiently large, expected error is `~3%`.
-        self.log2_array_len as usize
+        (self.sample_size_mask + 1) as usize
+    }
+
+    /// Returns the recommended full sampling size.
+    #[inline]
+    pub(crate) const fn full_sample_size(&self) -> usize {
+        // `Log2(array_len) * 2`: if `array_len` is sufficiently large, expected error is `~2%`.
+        self.sample_size() * 2
     }
 
     /// Returns a reference to a [`Bucket`] at the given position.
@@ -154,13 +167,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[inline]
     pub(crate) const fn bucket_link(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>> {
         &self.old_array
-    }
-
-    /// Returns the recommended sampling size.
-    #[inline]
-    pub(crate) fn full_sample_size(&self) -> usize {
-        // `Log2(array_len) * 2`: if `array_len` is sufficiently large, expected error is `~2%`.
-        self.sample_size() * 2
     }
 
     /// Returns `true` if the old array exists.

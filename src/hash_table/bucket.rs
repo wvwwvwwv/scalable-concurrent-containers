@@ -548,7 +548,9 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
         let link_ptr = link.get_guarded_ptr(guard);
         if let Some(link) = link_ptr.as_ref() {
-            self.write_data_block(&link.data_block, 0, entry);
+            self.write_cell(&link.data_block[0], |block| unsafe {
+                block.as_mut_ptr().write(entry);
+            });
             self.write_cell(&link.metadata.partial_hash_array[0], |h| {
                 *h = Self::partial_hash(hash);
             });
@@ -579,7 +581,9 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         debug_assert!(index < LEN);
         debug_assert_eq!(metadata.occupied_bitmap.load(Relaxed) & (1_u32 << index), 0);
 
-        self.write_data_block(data_block, index, entry);
+        self.write_cell(&data_block[index], |block| unsafe {
+            block.as_mut_ptr().write(entry);
+        });
         self.write_cell(&metadata.partial_hash_array[index], |h| {
             *h = Self::partial_hash(hash);
         });
@@ -637,20 +641,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         index: usize,
     ) -> (K, V) {
         unsafe { (*data_block.0[index].get()).as_ptr().read() }
-    }
-
-    /// Writes the data on the slot in the [`DataBlock`].
-    #[inline]
-    fn write_data_block<const LEN: usize>(
-        &self,
-        data_block: &DataBlock<K, V, LEN>,
-        index: usize,
-        value: (K, V),
-    ) {
-        self.write_cell(&data_block[index], |entry| unsafe {
-            let ptr = entry.as_mut_ptr();
-            ptr.write(value);
-        });
     }
 
     /// Returns a pointer to the slot in the [`DataBlock`].
@@ -737,38 +727,35 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     where
         Q: Equivalent<K> + ?Sized,
     {
-        if self.len() == 0 {
-            return EntryPtr::new(guard);
-        }
-
-        if let Some((_, index)) =
-            Self::search_data_block(&self.metadata, unsafe { data_block.as_ref() }, key, hash)
-        {
-            return EntryPtr {
-                current_link_ptr: Ptr::null(),
-                current_index: index,
-            };
-        }
-
-        let mut current_link_ptr = self.metadata.link.load(Acquire, guard);
-        while let Some(link) = current_link_ptr.as_ref() {
+        if self.len() != 0 {
             if let Some((_, index)) =
-                Self::search_data_block(&link.metadata, &link.data_block, key, hash)
+                Self::search_data_block(&self.metadata, unsafe { data_block.as_ref() }, key, hash)
             {
                 return EntryPtr {
-                    current_link_ptr,
+                    current_link_ptr: Ptr::null(),
                     current_index: index,
                 };
             }
-            current_link_ptr = link.metadata.link.load(Acquire, guard);
+
+            let mut current_link_ptr = self.metadata.link.load(Acquire, guard);
+            while let Some(link) = current_link_ptr.as_ref() {
+                if let Some((_, index)) =
+                    Self::search_data_block(&link.metadata, &link.data_block, key, hash)
+                {
+                    return EntryPtr {
+                        current_link_ptr,
+                        current_index: index,
+                    };
+                }
+                current_link_ptr = link.metadata.link.load(Acquire, guard);
+            }
         }
 
         EntryPtr::new(guard)
     }
 
     /// Searches the supplied data block for the entry containing the key.
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
+    #[inline]
     fn search_data_block<'g, Q, const LEN: usize>(
         metadata: &Metadata<K, V, LEN>,
         data_block: &'g DataBlock<K, V, LEN>,
@@ -799,7 +786,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             if key.equivalent(&entry.0) {
                 return Some((entry, offset as usize));
             }
-            bitmap -= 1_u32 << offset;
+            bitmap &= !(1_u32 << offset);
             offset = bitmap.trailing_zeros();
         }
 
