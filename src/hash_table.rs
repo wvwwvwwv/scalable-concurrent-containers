@@ -1403,7 +1403,6 @@ where
             // The preliminary sampling result cannot be trusted anymore.
             return;
         }
-        debug_assert!(!current_array.has_old_array());
 
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();

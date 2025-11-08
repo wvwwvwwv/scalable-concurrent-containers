@@ -210,21 +210,21 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 .store(occupied_bitmap, Relaxed);
             let removed = Self::read_data_block(&link.data_block, entry_ptr.current_index);
             if occupied_bitmap == 0 && TYPE != INDEX {
-                entry_ptr.unlink(self, link, guard);
+                entry_ptr.unlink(&self.metadata.link, link, guard);
             }
             removed
         } else {
-            let mut occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
+            let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
             debug_assert_ne!(occupied_bitmap & (1_u32 << entry_ptr.current_index), 0);
 
             if TYPE == CACHE {
                 self.remove_from_lru_list(entry_ptr);
             }
 
-            occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            self.metadata
-                .occupied_bitmap
-                .store(occupied_bitmap, Relaxed);
+            self.metadata.occupied_bitmap.store(
+                occupied_bitmap & !(1_u32 << entry_ptr.current_index),
+                Relaxed,
+            );
             Self::read_data_block(unsafe { data_block.as_ref() }, entry_ptr.current_index)
         }
     }
@@ -297,6 +297,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         None
     }
+
     /// Sets the entry as having been just accessed.
     #[inline]
     pub(crate) fn update_lru_tail(&self, entry_ptr: &EntryPtr<K, V, TYPE>) {
@@ -323,33 +324,32 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         let mut capacity =
             BUCKET_LEN - self.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
-        if capacity >= additional {
-            return;
-        }
-
-        let mut link_ptr = self.metadata.link.load(Acquire, guard);
-        while let Some(link) = link_ptr.as_ref() {
-            capacity += LINKED_BUCKET_LEN
-                - link.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
-            if capacity >= additional {
-                return;
+        if capacity < additional {
+            let mut link_ptr = self.metadata.link.load(Acquire, guard);
+            while let Some(link) = link_ptr.as_ref() {
+                capacity += LINKED_BUCKET_LEN
+                    - link.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
+                if capacity >= additional {
+                    return;
+                }
+                let mut next_link_ptr = link.metadata.link.load(Acquire, guard);
+                if next_link_ptr.is_null() {
+                    let new_link = unsafe { Shared::new_unchecked(LinkedBucket::new(None)) };
+                    new_link
+                        .prev_link
+                        .store(link_ptr.as_ptr().cast_mut(), Relaxed);
+                    next_link_ptr = new_link.get_guarded_ptr(guard);
+                    link.metadata
+                        .link
+                        .swap((Some(new_link), Tag::None), Release);
+                }
+                link_ptr = next_link_ptr;
             }
-            let mut next_link_ptr = link.metadata.link.load(Acquire, guard);
-            if next_link_ptr.is_null() {
-                let new_link = unsafe { Shared::new_unchecked(LinkedBucket::new(None)) };
-                new_link
-                    .prev_link
-                    .store(link_ptr.as_ptr().cast_mut(), Relaxed);
-                next_link_ptr = new_link.get_guarded_ptr(guard);
-                link.metadata
-                    .link
-                    .swap((Some(new_link), Tag::None), Release);
-            }
-            link_ptr = next_link_ptr;
         }
     }
 
     /// Extracts an entry from the given bucket and inserts the entry into itself.
+    #[inline]
     pub(crate) fn extract_from<'g>(
         &self,
         data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
@@ -375,18 +375,15 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         // Remove the entry from the old bucket.
         from_writer
             .len
-            .store(from_writer.len.load(Relaxed) - 1, Release);
+            .store(from_writer.len.load(Relaxed) - 1, Relaxed);
         if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
-            let mut occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
+            let occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
             debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
 
-            occupied_bitmap &= !(1_u32 << from_entry_ptr.current_index);
-            link.metadata
-                .occupied_bitmap
-                .store(occupied_bitmap, Relaxed);
-            if occupied_bitmap == 0 && TYPE != INDEX {
-                from_entry_ptr.unlink(from_writer, link, guard);
-            }
+            link.metadata.occupied_bitmap.store(
+                occupied_bitmap & !(1_u32 << from_entry_ptr.current_index),
+                Relaxed,
+            );
         } else {
             let occupied_bitmap = from_writer.metadata.occupied_bitmap.load(Relaxed);
             debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
@@ -1083,9 +1080,9 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     /// Unlinks the [`LinkedBucket`] currently pointed to by this [`EntryPtr`] from the linked list.
     ///
     /// The associated [`Bucket`] must be locked.
-    fn unlink<L: LruList>(
+    fn unlink(
         &mut self,
-        bucket: &Bucket<K, V, L, TYPE>,
+        link_head: &AtomicShared<LinkedBucket<K, V>>,
         link: &LinkedBucket<K, V>,
         guard: &'g Guard,
     ) {
@@ -1094,28 +1091,24 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         let prev_link_ptr = link.prev_link.load(Relaxed);
         let next = link.metadata.link.swap((None, Tag::None), Relaxed).0;
         if let Some(next) = next.as_ref() {
+            // Go to the next `Link`.
             next.prev_link.store(prev_link_ptr, Relaxed);
+            self.current_link_ptr = next.get_guarded_ptr(guard);
+            self.current_index = LINKED_BUCKET_LEN;
+        } else {
+            // Fuse the `EntryPtr`.
+            self.current_link_ptr = Ptr::null();
+            self.current_index = usize::MAX;
         }
 
-        self.current_link_ptr = next
-            .as_ref()
-            .map_or_else(Ptr::null, |n| n.get_guarded_ptr(guard));
         let unlinked = if let Some(prev) = unsafe { prev_link_ptr.as_ref() } {
-            prev.metadata.link.swap((next, Tag::None), Release).0
+            prev.metadata.link.swap((next, Tag::None), Acquire).0
         } else {
-            bucket.metadata.link.swap((next, Tag::None), Release).0
+            link_head.swap((next, Tag::None), Acquire).0
         };
         if let Some(link) = unlinked {
             let dropped = unsafe { link.drop_in_place() };
             debug_assert!(dropped);
-        }
-
-        if self.current_link_ptr.is_null() {
-            // Fuse the `EntryPtr`.
-            self.current_index = usize::MAX;
-        } else {
-            // Go to the next `Link`.
-            self.current_index = LINKED_BUCKET_LEN;
         }
     }
 
