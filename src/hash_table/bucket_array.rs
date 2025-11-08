@@ -35,8 +35,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             .next_power_of_two()
             .max(Self::minimum_capacity());
         let array_len = adjusted_capacity / BUCKET_LEN;
-        let log2_array_len =
-            u16::try_from(usize::BITS - array_len.leading_zeros() - 1).unwrap_or(0);
+        let log2_array_len = u16::try_from(array_len.trailing_zeros()).unwrap_or(0);
         assert_eq!(1_usize << log2_array_len, array_len);
 
         let alignment = align_of::<Bucket<K, V, L, TYPE>>();
