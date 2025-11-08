@@ -57,17 +57,17 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 .cast::<Bucket<K, V, L, TYPE>>();
             let bucket_array_ptr_offset = u16::try_from(bucket_array_ptr_offset).unwrap_or(0);
 
-            let data_block_array_layout = Layout::from_size_align(
-                size_of::<DataBlock<K, V, BUCKET_LEN>>() * array_len,
-                align_of::<[DataBlock<K, V, BUCKET_LEN>; 0]>(),
-            )
-            .unwrap();
-
             #[cfg(feature = "loom")]
             for i in 0..array_len {
                 // `loom` types need proper initialization.
                 buckets.add(i).write(Bucket::new());
             }
+
+            let data_block_array_layout = Layout::from_size_align(
+                size_of::<DataBlock<K, V, BUCKET_LEN>>() * array_len,
+                align_of::<[DataBlock<K, V, BUCKET_LEN>; 0]>(),
+            )
+            .unwrap();
 
             // In case the below data block allocation fails, deallocate the bucket array.
             let mut alloc_guard = ExitGuard::new(false, |allocated| {
