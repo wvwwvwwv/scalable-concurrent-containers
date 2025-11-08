@@ -153,13 +153,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 == (u32::MAX >> (32 - BUCKET_LEN))
     }
 
-    /// Returns the partial hash value of the given hash.
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    pub const fn partial_hash(hash: u64) -> u8 {
-        hash as u8
-    }
-
     /// Reserves memory for insertion and then constructs the key-value pair in-place.
     #[inline]
     pub(crate) fn insert<'g>(
@@ -324,6 +317,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     }
 
     /// Reserves memory for additional entries.
+    #[inline]
     pub(crate) fn reserve_slots(&self, additional: usize, guard: &Guard) {
         debug_assert!(self.rw_lock.is_locked(Relaxed));
 
@@ -340,17 +334,18 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             if capacity >= additional {
                 return;
             }
-            link_ptr = link.metadata.link.load(Acquire, guard);
-        }
-
-        let additional_links = (additional - capacity).div_ceil(LINKED_BUCKET_LEN);
-        for _ in 0..additional_links {
-            let head = self.metadata.link.get_shared(Relaxed, guard);
-            let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
-            if let Some(head) = link.metadata.link.load(Relaxed, guard).as_ref() {
-                head.prev_link.store(link.as_ptr().cast_mut(), Relaxed);
+            let mut next_link_ptr = link.metadata.link.load(Acquire, guard);
+            if next_link_ptr.is_null() {
+                let new_link = unsafe { Shared::new_unchecked(LinkedBucket::new(None)) };
+                new_link
+                    .prev_link
+                    .store(link_ptr.as_ptr().cast_mut(), Relaxed);
+                next_link_ptr = new_link.get_guarded_ptr(guard);
+                link.metadata
+                    .link
+                    .swap((Some(new_link), Tag::None), Release);
             }
-            self.metadata.link.swap((Some(link), Tag::None), Release);
+            link_ptr = next_link_ptr;
         }
     }
 
@@ -632,6 +627,13 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 e.take();
             }
         });
+    }
+
+    /// Returns the partial hash value of the given hash.
+    #[allow(clippy::cast_possible_truncation)]
+    #[inline]
+    const fn partial_hash(hash: u64) -> u8 {
+        hash as u8
     }
 
     /// Reads the data at the given index.

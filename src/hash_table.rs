@@ -1055,44 +1055,29 @@ where
         // Need to pre-allocate slots if the container is shrinking or the old bucket overflows,
         // because incomplete relocation of entries may result in duplicate key problems.
         let pre_allocate_slots =
-            old_array.len() >= current_array.len() || old_writer.len() > BUCKET_LEN;
+            old_array.len() > current_array.len() || old_writer.len() > BUCKET_LEN;
         let mut distribution = [0_u32; 8];
         let mut extended_distribution: Vec<u32> = Vec::new();
-        let mut hash_data = [[0_u8; BUCKET_LEN]; 2];
-        let mut extended_hash_data = Vec::new();
-        let mut offset_data = [[0_usize; BUCKET_LEN]; 2];
-        let mut extended_offset_data = Vec::new();
+        let mut hash_data = [0_u64; BUCKET_LEN];
         let old_data_block = old_array.data_block(old_index);
 
         // Collect data for relocation.
         let mut entry_ptr = EntryPtr::new(guard);
         let mut position = 0;
         while entry_ptr.move_to_next(old_writer, guard) {
-            let old_entry = entry_ptr.get(old_data_block);
             let (offset, hash) = if old_array.len() >= current_array.len() {
-                debug_assert_eq!(
-                    current_array.calculate_bucket_index(self.hash(&old_entry.0)),
-                    target_index
-                );
-                (0, entry_ptr.partial_hash(&**old_writer))
+                (0, u64::from(entry_ptr.partial_hash(&**old_writer)))
             } else {
-                let hash = self.hash(&old_entry.0);
+                let hash = self.hash(&entry_ptr.get(old_data_block).0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                (
-                    new_index - target_index,
-                    Bucket::<K, V, L, TYPE>::partial_hash(hash),
-                )
+                (new_index - target_index, hash)
             };
 
             if pre_allocate_slots {
-                if position < BUCKET_LEN * 2 {
-                    hash_data[position / BUCKET_LEN][position % BUCKET_LEN] = hash;
-                    offset_data[position / BUCKET_LEN][position % BUCKET_LEN] = offset;
+                if position != BUCKET_LEN {
+                    hash_data[position] = hash;
                     position += 1;
-                } else {
-                    extended_hash_data.push(hash);
-                    extended_offset_data.push(offset);
                 }
                 if offset < 8 {
                     distribution[offset] += 1;
@@ -1106,7 +1091,7 @@ where
                 let bucket = current_array.bucket(target_index + offset);
                 bucket.extract_from(
                     current_array.data_block(target_index + offset),
-                    u64::from(hash),
+                    hash,
                     old_writer,
                     old_data_block,
                     &mut entry_ptr,
@@ -1137,27 +1122,28 @@ where
         entry_ptr = EntryPtr::new(guard);
         position = 0;
         while entry_ptr.move_to_next(old_writer, guard) {
-            let (hash, offset) = if position < BUCKET_LEN * 2 {
-                (
-                    hash_data[position / BUCKET_LEN][position % BUCKET_LEN],
-                    offset_data[position / BUCKET_LEN][position % BUCKET_LEN],
-                )
+            let hash = if old_array.len() >= current_array.len() {
+                u64::from(entry_ptr.partial_hash(&**old_writer))
+            } else if position == BUCKET_LEN {
+                self.hash(&entry_ptr.get(old_data_block).0)
             } else {
-                (
-                    extended_hash_data[position - BUCKET_LEN * 2],
-                    extended_offset_data[position - BUCKET_LEN * 2],
-                )
+                position += 1;
+                hash_data[position - 1]
             };
-            let bucket = current_array.bucket(target_index + offset);
+            let index = if old_array.len() >= current_array.len() {
+                target_index
+            } else {
+                current_array.calculate_bucket_index(hash)
+            };
+            let bucket = current_array.bucket(index);
             bucket.extract_from(
-                current_array.data_block(target_index + offset),
-                u64::from(hash),
+                current_array.data_block(index),
+                hash,
                 old_writer,
                 old_data_block,
                 &mut entry_ptr,
                 guard,
             );
-            position += 1;
         }
     }
 
