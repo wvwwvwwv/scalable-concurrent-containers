@@ -88,7 +88,7 @@ where
                     if let Some(current_array) = self.bucket_array().load(Acquire, &guard).as_ref()
                     {
                         if !current_array.has_old_array() {
-                            self.try_resize(current_array, &guard);
+                            self.try_resize(current_array, 0, &guard);
                         }
                     }
                     return additional_capacity;
@@ -158,7 +158,7 @@ where
                 && self.minimum_capacity().load(Relaxed) == 0
                 && !current_array.has_old_array()
             {
-                self.try_resize(current_array, guard);
+                self.try_resize(current_array, 0, guard);
             }
         }
         num_entries
@@ -206,7 +206,7 @@ where
                 }
             }
             if self.minimum_capacity().load(Relaxed) == 0 && !current_array.has_old_array() {
-                self.try_resize(current_array, guard);
+                self.try_resize(current_array, 0, guard);
             }
         }
         false
@@ -411,7 +411,6 @@ where
 
             let bucket = current_array.bucket(bucket_index);
             if (TYPE != CACHE || current_array.num_slots() < self.maximum_capacity())
-                && current_array.initiate_sampling(bucket_index)
                 && bucket.len() >= BUCKET_LEN - 1
             {
                 self.try_enlarge(
@@ -460,7 +459,6 @@ where
 
             let bucket = current_array.bucket(bucket_index);
             if (TYPE != CACHE || current_array.num_slots() < self.maximum_capacity())
-                && current_array.initiate_sampling(bucket_index)
                 && bucket.len() >= BUCKET_LEN - 1
             {
                 self.try_enlarge(current_array, bucket_index, bucket.len(), guard);
@@ -834,7 +832,6 @@ where
 
             let mut bucket = current_array.bucket(bucket_index);
             if (TYPE != CACHE || current_array.num_slots() < self.maximum_capacity())
-                && current_array.initiate_sampling(bucket_index)
                 && bucket.len() >= BUCKET_LEN - 1
             {
                 self.try_enlarge(current_array, bucket_index, bucket.len(), guard);
@@ -1378,7 +1375,7 @@ where
                 num_entries > threshold
             })
         {
-            self.try_resize(current_array, guard);
+            self.try_resize(current_array, index, guard);
         }
     }
 
@@ -1414,21 +1411,26 @@ where
                     return;
                 }
                 if TYPE == INDEX && bucket.need_rebuild() {
-                    if num_buckets_to_rebuild >= rebuild_threshold {
-                        self.try_resize(current_array, guard);
+                    num_buckets_to_rebuild += 1;
+                    if num_buckets_to_rebuild > rebuild_threshold {
+                        self.try_resize(current_array, index, guard);
                         return;
                     }
-                    num_buckets_to_rebuild += 1;
                 }
             }
             if TYPE != INDEX || num_entries <= shrink_threshold {
-                self.try_resize(current_array, guard);
+                self.try_resize(current_array, index, guard);
             }
         }
     }
 
     /// Tries to resize the array.
-    fn try_resize(&self, sampled_array: &BucketArray<K, V, L, TYPE>, guard: &Guard) {
+    fn try_resize(
+        &self,
+        sampled_array: &BucketArray<K, V, L, TYPE>,
+        sampling_index: usize,
+        guard: &Guard,
+    ) {
         let current_array_ptr = self.bucket_array().load(Acquire, guard);
         if current_array_ptr.tag() != Tag::None {
             // Another thread is currently allocating a new bucket array.
@@ -1442,11 +1444,12 @@ where
             // The preliminary sampling result cannot be trusted anymore.
             return;
         }
+        debug_assert!(!current_array.has_old_array());
 
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
-        let estimated_num_entries = Self::sample(current_array, 0, sample_size);
+        let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
 
         let new_capacity =
             if capacity < minimum_capacity || estimated_num_entries >= (capacity / 16) * 13 {
@@ -1692,9 +1695,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
     ) where
         H: BuildHasher,
     {
-        if self.bucket_array().initiate_sampling(self.bucket_index)
-            && (self.writer.need_rebuild() || self.writer.len() <= 1)
-        {
+        if self.writer.need_rebuild() || self.writer.len() <= 1 {
             if let Some(current_array) = hash_table.bucket_array().load(Acquire, guard).as_ref() {
                 if ptr::eq(current_array, self.bucket_array()) {
                     let bucket_index = self.bucket_index;

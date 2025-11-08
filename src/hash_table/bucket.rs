@@ -830,13 +830,9 @@ impl<K, V, L: LruList, const TYPE: char> Writer<K, V, L, TYPE> {
     #[inline]
     pub(crate) async fn lock_async<'g>(
         bucket: &'g Bucket<K, V, L, TYPE>,
-        sendable_guard: &'g AsyncGuard,
+        async_guard: &'g AsyncGuard,
     ) -> Option<Writer<K, V, L, TYPE>> {
-        if bucket
-            .rw_lock
-            .lock_async_with(|| sendable_guard.reset())
-            .await
-        {
+        if bucket.rw_lock.lock_async_with(|| async_guard.reset()).await {
             // The `bucket` was not killed, and will not be killed until the `Writer` is dropped.
             // This guarantees that the `BucketArray` will survive as long as the `Writer` is alive.
             Some(Self::from_bucket(bucket))
@@ -930,11 +926,11 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<K, V, L, TYPE> {
     #[inline]
     pub(crate) async fn lock_async(
         bucket: &'g Bucket<K, V, L, TYPE>,
-        sendable_guard: &AsyncGuard,
+        async_guard: &AsyncGuard,
     ) -> Option<Reader<K, V, L, TYPE>> {
         if bucket
             .rw_lock
-            .share_async_with(|| sendable_guard.reset())
+            .share_async_with(|| async_guard.reset())
             .await
         {
             // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
