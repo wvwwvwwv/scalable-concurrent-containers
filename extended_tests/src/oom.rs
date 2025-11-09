@@ -5,9 +5,8 @@ use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
 use std::thread::yield_now;
 
-use sdd::{Guard, Shared};
-
 use scc::{HashCache, HashIndex, HashMap, TreeIndex};
+use sdd::{Guard, Shared};
 
 struct OOMAllocator;
 

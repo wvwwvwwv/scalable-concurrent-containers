@@ -88,7 +88,7 @@ where
                     if let Some(current_array) = self.bucket_array().load(Acquire, &guard).as_ref()
                     {
                         if !current_array.has_old_array() {
-                            self.try_resize(current_array, &guard);
+                            self.try_resize(current_array, 0, &guard);
                         }
                     }
                     return additional_capacity;
@@ -106,22 +106,23 @@ where
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             current_array
         } else {
-            unsafe {
-                match self.bucket_array().compare_exchange(
-                    Ptr::null(),
-                    (
-                        Some(Shared::new_unchecked(BucketArray::<K, V, L, TYPE>::new(
-                            self.minimum_capacity().load(Relaxed),
-                            AtomicShared::null(),
-                        ))),
-                        Tag::None,
-                    ),
-                    AcqRel,
-                    Acquire,
-                    guard,
-                ) {
-                    Ok((_, ptr)) | Err((_, ptr)) => ptr.as_ref().unwrap_unchecked(),
-                }
+            self.allocate_bucket_array(guard)
+        }
+    }
+
+    /// Allocates a new bucket array.
+    fn allocate_bucket_array<'g>(&self, guard: &'g Guard) -> &'g BucketArray<K, V, L, TYPE> {
+        unsafe {
+            let capacity = self.minimum_capacity().load(Relaxed);
+            let allocated = Shared::new_unchecked(BucketArray::new(capacity, AtomicShared::null()));
+            match self.bucket_array().compare_exchange(
+                Ptr::null(),
+                (Some(allocated), Tag::None),
+                AcqRel,
+                Acquire,
+                guard,
+            ) {
+                Ok((_, ptr)) | Err((_, ptr)) => ptr.as_ref().unwrap_unchecked(),
             }
         }
     }
@@ -139,7 +140,6 @@ where
     /// Returns the number of entries.
     ///
     /// In case there are more than `usize::MAX` entries, it returns `usize::MAX`.
-    #[inline]
     fn num_entries(&self, guard: &Guard) -> usize {
         let mut num_entries: usize = 0;
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
@@ -154,37 +154,14 @@ where
             for i in 0..current_array.len() {
                 num_entries = num_entries.saturating_add(current_array.bucket(i).len());
             }
-            if num_entries == 0
+            if old_array_ptr.is_null()
+                && num_entries == 0
                 && self.minimum_capacity().load(Relaxed) == 0
-                && !current_array.has_old_array()
             {
-                self.try_resize(current_array, guard);
+                self.try_resize(current_array, 0, guard);
             }
         }
         num_entries
-    }
-
-    /// For the given index in the current array, calculate the respective range in the old array.
-    #[inline]
-    fn from_index_to_range(from_len: usize, to_len: usize, from_index: usize) -> (usize, usize) {
-        debug_assert!(from_len.is_power_of_two() && to_len.is_power_of_two());
-        if from_len < to_len {
-            let ratio = to_len / from_len;
-            let start_index = from_index * ratio;
-            debug_assert!(
-                start_index + ratio <= to_len,
-                "+ {start_index} < {to_len}, {from_len} {to_len} {ratio} {from_index}"
-            );
-            (start_index, start_index + ratio)
-        } else {
-            let ratio = from_len / to_len;
-            let start_index = from_index / ratio;
-            debug_assert!(
-                start_index < to_len,
-                "- {start_index} < {to_len}, {from_len} {to_len} {ratio} {from_index}"
-            );
-            (start_index, start_index + 1)
-        }
     }
 
     /// Returns `true` if a valid entry is found.
@@ -205,8 +182,8 @@ where
                     return true;
                 }
             }
-            if self.minimum_capacity().load(Relaxed) == 0 && !current_array.has_old_array() {
-                self.try_resize(current_array, guard);
+            if old_array_ptr.is_null() && self.minimum_capacity().load(Relaxed) == 0 {
+                self.try_resize(current_array, 0, guard);
             }
         }
         false
@@ -430,7 +407,7 @@ where
                     writer,
                     data_block: current_array.data_block(bucket_index),
                     bucket_index,
-                    bucket_array: Self::into_non_null(current_array),
+                    bucket_array: into_non_null(current_array),
                 };
             }
             if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
@@ -438,7 +415,7 @@ where
                     writer,
                     data_block: current_array.data_block(bucket_index),
                     bucket_index,
-                    bucket_array: Self::into_non_null(current_array),
+                    bucket_array: into_non_null(current_array),
                 };
             }
         }
@@ -471,7 +448,7 @@ where
                     writer,
                     data_block: current_array.data_block(bucket_index),
                     bucket_index,
-                    bucket_array: Self::into_non_null(current_array),
+                    bucket_array: into_non_null(current_array),
                 };
             }
         }
@@ -508,7 +485,7 @@ where
                     writer,
                     data_block: current_array.data_block(bucket_index),
                     bucket_index,
-                    bucket_array: Self::into_non_null(current_array),
+                    bucket_array: into_non_null(current_array),
                 });
             }
             if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
@@ -516,7 +493,7 @@ where
                     writer,
                     data_block: current_array.data_block(bucket_index),
                     bucket_index,
-                    bucket_array: Self::into_non_null(current_array),
+                    bucket_array: into_non_null(current_array),
                 });
             }
         }
@@ -546,7 +523,7 @@ where
                     writer,
                     data_block: current_array.data_block(bucket_index),
                     bucket_index,
-                    bucket_array: Self::into_non_null(current_array),
+                    bucket_array: into_non_null(current_array),
                 });
             }
         }
@@ -569,7 +546,7 @@ where
             start_index = if prev_len == 0 || prev_len == current_array.len() {
                 start_index
             } else {
-                Self::from_index_to_range(prev_len, current_array.len(), start_index).0
+                from_index_to_range(prev_len, current_array.len(), start_index).0
             };
             prev_len = current_array.len();
 
@@ -628,7 +605,7 @@ where
             start_index = if prev_len == 0 || prev_len == current_array.len() {
                 start_index
             } else {
-                Self::from_index_to_range(prev_len, current_array.len(), start_index).0
+                from_index_to_range(prev_len, current_array.len(), start_index).0
             };
             prev_len = current_array.len();
 
@@ -681,7 +658,7 @@ where
             start_index = if prev_len == 0 || prev_len == current_array_len {
                 start_index
             } else {
-                Self::from_index_to_range(prev_len, current_array_len, start_index).0
+                from_index_to_range(prev_len, current_array_len, start_index).0
             };
             prev_len = current_array_len;
 
@@ -710,7 +687,7 @@ where
                         writer,
                         data_block: current_array.data_block(bucket_index),
                         bucket_index,
-                        bucket_array: Self::into_non_null(current_array),
+                        bucket_array: into_non_null(current_array),
                     };
                     let stop = f(locked_bucket, &mut removed);
                     if stop {
@@ -763,7 +740,7 @@ where
             start_index = if prev_len == 0 || prev_len == current_array_len {
                 start_index
             } else {
-                Self::from_index_to_range(prev_len, current_array_len, start_index).0
+                from_index_to_range(prev_len, current_array_len, start_index).0
             };
             prev_len = current_array_len;
 
@@ -786,7 +763,7 @@ where
                         writer,
                         data_block: current_array.data_block(bucket_index),
                         bucket_index,
-                        bucket_array: Self::into_non_null(current_array),
+                        bucket_array: into_non_null(current_array),
                     };
                     let stop = f(locked_bucket, &mut removed);
                     if stop {
@@ -849,7 +826,7 @@ where
                     writer,
                     data_block: current_array.data_block(bucket_index),
                     bucket_index,
-                    bucket_array: Self::into_non_null(current_array),
+                    bucket_array: into_non_null(current_array),
                 });
             }
         }
@@ -878,7 +855,7 @@ where
         }
 
         if let Some(old_array) = async_guard.load(current_array.bucket_link(), Acquire) {
-            let range = Self::from_index_to_range(current_array.len(), old_array.len(), index);
+            let range = from_index_to_range(current_array.len(), old_array.len(), index);
             for old_index in range.0..range.1 {
                 let bucket = old_array.bucket(old_index);
                 let writer = Writer::lock_async(bucket, async_guard).await;
@@ -918,7 +895,7 @@ where
         index: usize,
         guard: &'g Guard,
     ) -> bool {
-        let range = Self::from_index_to_range(current_array.len(), old_array.len(), index);
+        let range = from_index_to_range(current_array.len(), old_array.len(), index);
         for old_index in range.0..range.1 {
             let bucket = old_array.bucket(old_index);
             let writer = if TRY_LOCK {
@@ -963,7 +940,7 @@ where
 
         // Lock the target buckets.
         let (target_index, end_target_index) =
-            Self::from_index_to_range(old_array.len(), current_array.len(), old_index);
+            from_index_to_range(old_array.len(), current_array.len(), old_index);
         for i in target_index..end_target_index {
             let writer = unsafe {
                 Writer::lock_async(current_array.bucket(i), async_guard)
@@ -979,7 +956,7 @@ where
             return;
         };
         let (target_index, end_target_index) =
-            Self::from_index_to_range(old_array.len(), current_array.len(), old_index);
+            from_index_to_range(old_array.len(), current_array.len(), old_index);
         let unlock = ExitGuard::new(
             (current_array, target_index, end_target_index),
             |(current_array, target_index, end_target_index)| {
@@ -1023,7 +1000,7 @@ where
         }
 
         let (target_index, end_target_index) =
-            Self::from_index_to_range(old_array.len(), current_array.len(), old_index);
+            from_index_to_range(old_array.len(), current_array.len(), old_index);
 
         // Lock the target buckets.
         for i in target_index..end_target_index {
@@ -1078,44 +1055,29 @@ where
         // Need to pre-allocate slots if the container is shrinking or the old bucket overflows,
         // because incomplete relocation of entries may result in duplicate key problems.
         let pre_allocate_slots =
-            old_array.len() >= current_array.len() || old_writer.len() > BUCKET_LEN;
+            old_array.len() > current_array.len() || old_writer.len() > BUCKET_LEN;
         let mut distribution = [0_u32; 8];
         let mut extended_distribution: Vec<u32> = Vec::new();
-        let mut hash_data = [[0_u8; BUCKET_LEN]; 2];
-        let mut extended_hash_data = Vec::new();
-        let mut offset_data = [[0_usize; BUCKET_LEN]; 2];
-        let mut extended_offset_data = Vec::new();
+        let mut hash_data = [0_u64; BUCKET_LEN];
         let old_data_block = old_array.data_block(old_index);
 
         // Collect data for relocation.
         let mut entry_ptr = EntryPtr::new(guard);
         let mut position = 0;
         while entry_ptr.move_to_next(old_writer, guard) {
-            let old_entry = entry_ptr.get(old_data_block);
             let (offset, hash) = if old_array.len() >= current_array.len() {
-                debug_assert_eq!(
-                    current_array.calculate_bucket_index(self.hash(&old_entry.0)),
-                    target_index
-                );
-                (0, entry_ptr.partial_hash(&**old_writer))
+                (0, u64::from(entry_ptr.partial_hash(&**old_writer)))
             } else {
-                let hash = self.hash(&old_entry.0);
+                let hash = self.hash(&entry_ptr.get(old_data_block).0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                (
-                    new_index - target_index,
-                    Bucket::<K, V, L, TYPE>::partial_hash(hash),
-                )
+                (new_index - target_index, hash)
             };
 
             if pre_allocate_slots {
-                if position < BUCKET_LEN * 2 {
-                    hash_data[position / BUCKET_LEN][position % BUCKET_LEN] = hash;
-                    offset_data[position / BUCKET_LEN][position % BUCKET_LEN] = offset;
+                if position != BUCKET_LEN {
+                    hash_data[position] = hash;
                     position += 1;
-                } else {
-                    extended_hash_data.push(hash);
-                    extended_offset_data.push(offset);
                 }
                 if offset < 8 {
                     distribution[offset] += 1;
@@ -1129,7 +1091,7 @@ where
                 let bucket = current_array.bucket(target_index + offset);
                 bucket.extract_from(
                     current_array.data_block(target_index + offset),
-                    u64::from(hash),
+                    hash,
                     old_writer,
                     old_data_block,
                     &mut entry_ptr,
@@ -1160,27 +1122,28 @@ where
         entry_ptr = EntryPtr::new(guard);
         position = 0;
         while entry_ptr.move_to_next(old_writer, guard) {
-            let (hash, offset) = if position < BUCKET_LEN * 2 {
-                (
-                    hash_data[position / BUCKET_LEN][position % BUCKET_LEN],
-                    offset_data[position / BUCKET_LEN][position % BUCKET_LEN],
-                )
+            let hash = if old_array.len() >= current_array.len() {
+                u64::from(entry_ptr.partial_hash(&**old_writer))
+            } else if position == BUCKET_LEN {
+                self.hash(&entry_ptr.get(old_data_block).0)
             } else {
-                (
-                    extended_hash_data[position - BUCKET_LEN * 2],
-                    extended_offset_data[position - BUCKET_LEN * 2],
-                )
+                position += 1;
+                hash_data[position - 1]
             };
-            let bucket = current_array.bucket(target_index + offset);
+            let index = if old_array.len() >= current_array.len() {
+                target_index
+            } else {
+                current_array.calculate_bucket_index(hash)
+            };
+            let bucket = current_array.bucket(index);
             bucket.extract_from(
-                current_array.data_block(target_index + offset),
-                u64::from(hash),
+                current_array.data_block(index),
+                hash,
                 old_writer,
                 old_data_block,
                 &mut entry_ptr,
                 guard,
             );
-            position += 1;
         }
     }
 
@@ -1362,23 +1325,19 @@ where
         mut num_entries: usize,
         guard: &Guard,
     ) {
-        if current_array.has_old_array() {
-            return;
-        }
-
-        let sample_size = current_array.sample_size();
-
-        // Try to grow if the estimated load factor is greater than `13/16`.
-        let threshold = sample_size * (BUCKET_LEN / 16) * 13;
-        if num_entries > threshold
-            || (1..sample_size).any(|i| {
-                num_entries += current_array
-                    .bucket((index + i) % current_array.len())
-                    .len();
-                num_entries > threshold
-            })
-        {
-            self.try_resize(current_array, guard);
+        if !current_array.has_old_array() {
+            // Try to grow if the estimated load factor is greater than `13/16`.
+            let threshold = current_array.sample_size() * (BUCKET_LEN / 16) * 13;
+            if num_entries > threshold
+                || (1..current_array.sample_size()).any(|i| {
+                    num_entries += current_array
+                        .bucket((index + i) % current_array.len())
+                        .len();
+                    num_entries > threshold
+                })
+            {
+                self.try_resize(current_array, index, guard);
+            }
         }
     }
 
@@ -1390,45 +1349,47 @@ where
         index: usize,
         guard: &Guard,
     ) {
-        if current_array.has_old_array() {
-            return;
-        }
-
-        let minimum_capacity = self.minimum_capacity().load(Relaxed);
-        if TYPE == INDEX || current_array.num_slots() > minimum_capacity {
-            let sample_size = current_array.sample_size();
-
-            // Try to shrink if the estimated load factor is less than `1/8`.
-            let shrink_threshold = sample_size * BUCKET_LEN / 8;
-            let rebuild_threshold = sample_size / 2;
-            let mut num_entries = 0;
-            let mut num_buckets_to_rebuild = 0;
-            for i in 0..sample_size {
-                let bucket = current_array.bucket((index + i) % current_array.len());
-                num_entries += bucket.len();
-                if num_entries >= shrink_threshold
-                    && (TYPE != INDEX
-                        || num_buckets_to_rebuild + (sample_size - i) < rebuild_threshold)
-                {
-                    // Early exit.
-                    return;
-                }
-                if TYPE == INDEX && bucket.need_rebuild() {
-                    if num_buckets_to_rebuild >= rebuild_threshold {
-                        self.try_resize(current_array, guard);
+        if !current_array.has_old_array() {
+            let minimum_capacity = self.minimum_capacity().load(Relaxed);
+            if TYPE == INDEX || current_array.num_slots() > minimum_capacity {
+                // Try to shrink if the estimated load factor is less than `1/8`.
+                let shrink_threshold = current_array.sample_size() * BUCKET_LEN / 8;
+                let rebuild_threshold = current_array.sample_size() / 2;
+                let mut num_entries = 0;
+                let mut num_buckets_to_rebuild = 0;
+                for i in 0..current_array.sample_size() {
+                    let bucket = current_array.bucket((index + i) % current_array.len());
+                    num_entries += bucket.len();
+                    if num_entries >= shrink_threshold
+                        && (TYPE != INDEX
+                            || num_buckets_to_rebuild + (current_array.sample_size() - i)
+                                < rebuild_threshold)
+                    {
+                        // Early exit.
                         return;
                     }
-                    num_buckets_to_rebuild += 1;
+                    if TYPE == INDEX && bucket.need_rebuild() {
+                        num_buckets_to_rebuild += 1;
+                        if num_buckets_to_rebuild > rebuild_threshold {
+                            self.try_resize(current_array, index, guard);
+                            return;
+                        }
+                    }
                 }
-            }
-            if TYPE != INDEX || num_entries <= shrink_threshold {
-                self.try_resize(current_array, guard);
+                if TYPE != INDEX || num_entries <= shrink_threshold {
+                    self.try_resize(current_array, index, guard);
+                }
             }
         }
     }
 
     /// Tries to resize the array.
-    fn try_resize(&self, sampled_array: &BucketArray<K, V, L, TYPE>, guard: &Guard) {
+    fn try_resize(
+        &self,
+        sampled_array: &BucketArray<K, V, L, TYPE>,
+        sampling_index: usize,
+        guard: &Guard,
+    ) {
         let current_array_ptr = self.bucket_array().load(Acquire, guard);
         if current_array_ptr.tag() != Tag::None {
             // Another thread is currently allocating a new bucket array.
@@ -1446,7 +1407,7 @@ where
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
-        let estimated_num_entries = Self::sample(current_array, 0, sample_size);
+        let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
 
         let new_capacity =
             if capacity < minimum_capacity || estimated_num_entries >= (capacity / 16) * 13 {
@@ -1570,12 +1531,6 @@ where
     fn prolonged_guard_ref<'h>(&'h self, guard: &Guard) -> &'h Guard {
         let _: &Self = self;
         unsafe { std::mem::transmute::<&Guard, &'h Guard>(guard) }
-    }
-
-    /// Turns a reference into a [`NonNull`] pointer.
-    #[inline]
-    fn into_non_null<T: Sized>(t: &T) -> NonNull<T> {
-        unsafe { NonNull::new_unchecked(from_ref(t).cast_mut()) }
     }
 }
 
@@ -1807,4 +1762,26 @@ unsafe impl<K: Send, V: Send, L: LruList, const TYPE: char> Send for LockedBucke
 unsafe impl<K: Send + Sync, V: Send + Sync, L: LruList, const TYPE: char> Sync
     for LockedBucket<K, V, L, TYPE>
 {
+}
+
+/// For the given index in the current array, calculate the respective range in the old array.
+#[inline]
+const fn from_index_to_range(from_len: usize, to_len: usize, from_index: usize) -> (usize, usize) {
+    debug_assert!(from_len.is_power_of_two() && to_len.is_power_of_two());
+    if from_len < to_len {
+        let ratio = to_len / from_len;
+        let start_index = from_index * ratio;
+        debug_assert!(start_index + ratio <= to_len,);
+        (start_index, start_index + ratio)
+    } else {
+        let ratio = from_len / to_len;
+        let start_index = from_index / ratio;
+        debug_assert!(start_index < to_len,);
+        (start_index, start_index + 1)
+    }
+}
+
+/// Turns a reference into a [`NonNull`] pointer.
+const fn into_non_null<T: Sized>(t: &T) -> NonNull<T> {
+    unsafe { NonNull::new_unchecked(from_ref(t).cast_mut()) }
 }

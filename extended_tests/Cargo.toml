@@ -6,7 +6,7 @@ edition = "2024"
 
 [dependencies]
 scc = { path = ".."}
-sdd = "4.0"
+sdd = "4.3"
 
 [dev-dependencies]
 rand = "0.9"

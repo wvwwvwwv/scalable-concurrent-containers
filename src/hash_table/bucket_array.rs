@@ -142,6 +142,13 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         (self.sample_size_mask + 1) as usize
     }
 
+    /// Returns the recommended full sampling size.
+    #[inline]
+    pub(crate) const fn full_sample_size(&self) -> usize {
+        // `Log2(array_len) * 2`: if `array_len` is sufficiently large, expected error is `~2%`.
+        self.sample_size() * 2
+    }
+
     /// Returns a reference to a [`Bucket`] at the given position.
     #[inline]
     pub(crate) const fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
@@ -160,13 +167,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[inline]
     pub(crate) const fn bucket_link(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>> {
         &self.old_array
-    }
-
-    /// Returns the recommended sampling size.
-    #[inline]
-    pub(crate) fn full_sample_size(&self) -> usize {
-        // `Log2(array_len) * 2`: if `array_len` is sufficiently large, expected error is `~2%`.
-        self.sample_size() * 2
     }
 
     /// Returns `true` if the old array exists.
