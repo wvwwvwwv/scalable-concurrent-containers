@@ -4,6 +4,11 @@
 pub mod bag;
 pub use bag::Bag;
 
+// Re-export [`sdd`](https://crates.io/crates/sdd) modules for backward compatibility.
+pub use sdd::{AtomicShared, Guard, Shared, Tag};
+pub use sdd::{LinkedEntry, LinkedList, Queue, Stack};
+pub use sdd::{queue, stack};
+
 #[cfg(not(feature = "equivalent"))]
 mod equivalent;
 pub use equivalent::{Comparable, Equivalent};
@@ -19,18 +24,6 @@ pub use hash_map::HashMap;
 
 pub mod hash_set;
 pub use hash_set::HashSet;
-
-mod linked_list;
-pub use linked_list::Entry as LinkedEntry;
-pub use linked_list::LinkedList;
-
-pub mod queue;
-pub use queue::Queue;
-
-pub use sdd::{AtomicShared, Guard, Shared, Tag};
-
-pub mod stack;
-pub use stack::Stack;
 
 pub mod tree_index;
 pub use tree_index::TreeIndex;

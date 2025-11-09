@@ -20,9 +20,6 @@ A collection of high-performance containers and utilities providing both asynchr
 - [`HashCache`](#hashcache) is a 32-way associative concurrent cache backed by [`HashMap`](#hashmap).
 - [`TreeIndex`](#treeindex) is a read-optimized concurrent B-plus tree.
 - [`Bag`](#bag) is a concurrent lock-free unordered opaque container.
-- [`Queue`](#queue) is a concurrent lock-free first-in-first-out container.
-- [`Stack`](#stack) is a concurrent lock-free last-in-first-out container.
-- [`LinkedList`](#linkedlist) is a trait that implements a lock-free concurrent singly linked list.
 
 ## `HashMap`
 
@@ -332,84 +329,6 @@ bag.push(1);
 assert!(!bag.is_empty());
 assert_eq!(bag.pop(), Some(1));
 assert!(bag.is_empty());
-```
-
-## `Queue`
-
-[`Queue`](#queue) is a concurrent lock-free first-in-first-out container backed by [`sdd`](https://crates.io/crates/sdd).
-
-### Examples
-
-```rust
-use scc::Queue;
-
-let queue: Queue<usize> = Queue::default();
-
-queue.push(1);
-assert!(queue.push_if(2, |e| e.map_or(false, |x| **x == 1)).is_ok());
-assert!(queue.push_if(3, |e| e.map_or(false, |x| **x == 1)).is_err());
-assert_eq!(queue.pop().map(|e| **e), Some(1));
-assert_eq!(queue.pop().map(|e| **e), Some(2));
-assert!(queue.pop().is_none());
-```
-
-## `Stack`
-
-[`Stack`](#stack) is a concurrent lock-free last-in-first-out container backed by [`sdd`](https://crates.io/crates/sdd).
-
-### Examples
-
-```rust
-use scc::Stack;
-
-let stack: Stack<usize> = Stack::default();
-
-stack.push(1);
-stack.push(2);
-assert_eq!(stack.pop().map(|e| **e), Some(2));
-assert_eq!(stack.pop().map(|e| **e), Some(1));
-assert!(stack.pop().is_none());
-```
-
-## `LinkedList`
-
-[`LinkedList`](#linkedlist) is a trait that implements lock-free concurrent singly linked list operations backed by [`sdd`](https://crates.io/crates/sdd). It additionally provides a method for marking a linked list entry to denote a user-defined state.
-
-### Examples
-
-```rust
-use std::sync::atomic::Ordering::Relaxed;
-
-use scc::{AtomicShared, Guard, LinkedList, Shared};
-
-#[derive(Default)]
-struct L(AtomicShared<L>, usize);
-impl LinkedList for L {
-    fn link_ref(&self) -> &AtomicShared<L> {
-        &self.0
-    }
-}
-
-let guard = Guard::new();
-
-let head: L = L::default();
-let tail: Shared<L> = Shared::new(L(AtomicShared::null(), 1));
-
-// A new entry is pushed.
-assert!(head.push_back(tail.clone(), false, Relaxed, &guard).is_ok());
-assert!(!head.is_marked(Relaxed));
-
-// Users can mark a flag on an entry.
-head.mark(Relaxed);
-assert!(head.is_marked(Relaxed));
-
-// `next_ptr` traverses the linked list.
-let next_ptr = head.next_ptr(Relaxed, &guard);
-assert_eq!(next_ptr.as_ref().unwrap().1, 1);
-
-// Once `tail` is deleted, it becomes invisible.
-tail.delete_self(Relaxed);
-assert!(head.next_ptr(Relaxed, &guard).is_null());
 ```
 
 ## Performance
