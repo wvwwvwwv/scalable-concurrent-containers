@@ -19,7 +19,6 @@ A collection of high-performance containers and utilities providing both asynchr
 - [`HashIndex`](#hashindex) is a read-optimized concurrent hash map.
 - [`HashCache`](#hashcache) is a 32-way associative concurrent cache backed by [`HashMap`](#hashmap).
 - [`TreeIndex`](#treeindex) is a read-optimized concurrent B-plus tree.
-- [`Bag`](#bag) is a concurrent lock-free unordered opaque container.
 
 ## `HashMap`
 
@@ -312,23 +311,6 @@ let guard = Guard::new();
 assert_eq!(treeindex.range(1..1, &guard).count(), 0);
 assert_eq!(treeindex.range(4..8, &guard).count(), 4);
 assert_eq!(treeindex.range(4..=8, &guard).count(), 5);
-```
-
-## `Bag`
-
-[`Bag`](#bag) is a concurrent lock-free unordered container. [`Bag`](#bag) is completely opaque, disallowing access to contained instances until they are popped. [`Bag`](#bag) is especially efficient if the number of contained instances can be maintained under `ARRAY_LEN (default: usize::BITS / 2)`
-
-### Examples
-
-```rust
-use scc::Bag;
-
-let bag: Bag<usize> = Bag::default();
-
-bag.push(1);
-assert!(!bag.is_empty());
-assert_eq!(bag.pop(), Some(1));
-assert!(bag.is_empty());
 ```
 
 ## Performance

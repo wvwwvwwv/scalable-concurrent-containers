@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.4.0
+
+* Migrate `Bag`, `LinkedList`, `Queue`, and `Stack` to `sdd`.
+
 3.3.7 - 3.3.8
 
 * Improve sampling accuracy in `Hash*` containers.

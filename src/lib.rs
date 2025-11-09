@@ -1,13 +1,9 @@
 #![deny(missing_docs, warnings, clippy::all, clippy::pedantic)]
 #![doc = include_str!("../README.md")]
 
-pub mod bag;
-pub use bag::Bag;
-
 // Re-export [`sdd`](https://crates.io/crates/sdd) modules for backward compatibility.
-pub use sdd::{AtomicShared, Guard, Shared, Tag};
-pub use sdd::{LinkedEntry, LinkedList, Queue, Stack};
-pub use sdd::{queue, stack};
+pub use sdd::{AtomicShared, Bag, Guard, LinkedEntry, LinkedList, Queue, Shared, Stack, Tag};
+pub use sdd::{bag, queue, stack};
 
 #[cfg(not(feature = "equivalent"))]
 mod equivalent;
