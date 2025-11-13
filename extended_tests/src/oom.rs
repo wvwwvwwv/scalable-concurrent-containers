@@ -8,6 +8,8 @@ use std::thread::yield_now;
 use scc::{HashCache, HashIndex, HashMap, TreeIndex};
 use sdd::{Guard, Shared};
 
+use crate::SERIALIZER;
+
 struct OOMAllocator;
 
 unsafe impl GlobalAlloc for OOMAllocator {
@@ -222,6 +224,8 @@ fn treeindex_panic_oom_2(repeat: usize) {
 #[cfg_attr(miri, ignore)]
 #[test]
 fn oom_panic_safety() {
+    let _guard = SERIALIZER.lock().unwrap();
+
     let repeat = (rand::random::<u32>() % 64 + 256) as usize;
 
     // EBR.

@@ -558,9 +558,7 @@ where
         if locked_bucket.search(&key, hash, &guard).is_valid() {
             Err((key, val))
         } else {
-            locked_bucket
-                .writer
-                .insert(locked_bucket.data_block, hash, (key, val), &guard);
+            locked_bucket.insert(hash, (key, val), &guard);
             Ok(())
         }
     }
