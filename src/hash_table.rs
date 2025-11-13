@@ -1052,14 +1052,14 @@ where
         // because incomplete relocation of entries may result in duplicate key problems.
         let pre_allocate_slots =
             old_array.len() > current_array.len() || old_writer.len() > BUCKET_LEN;
-        let mut distribution = [0_u32; 8];
-        let mut extended_distribution: Vec<u32> = Vec::new();
-        let mut hash_data = [0_u64; BUCKET_LEN];
         let old_data_block = old_array.data_block(old_index);
-
-        // Collect data for relocation.
         let mut entry_ptr = EntryPtr::new(guard);
         let mut position = 0;
+        let mut dist = [0_u32; 8];
+        let mut extended_dist: Vec<u32> = Vec::new();
+        let mut hash_data = [0_u64; BUCKET_LEN];
+
+        // Collect data for relocation.
         while entry_ptr.move_to_next(old_writer, guard) {
             let (offset, hash) = if old_array.len() >= current_array.len() {
                 (0, u64::from(entry_ptr.partial_hash(&**old_writer)))
@@ -1076,16 +1076,15 @@ where
                     position += 1;
                 }
                 if offset < 8 {
-                    distribution[offset] += 1;
+                    dist[offset] += 1;
                 } else {
-                    if extended_distribution.len() < offset - 7 {
-                        extended_distribution.resize(offset - 7, 0);
+                    if extended_dist.len() < offset - 7 {
+                        extended_dist.resize(offset - 7, 0);
                     }
-                    extended_distribution[offset - 8] += 1;
+                    extended_dist[offset - 8] += 1;
                 }
             } else {
-                let bucket = current_array.bucket(target_index + offset);
-                bucket.extract_from(
+                current_array.bucket(target_index + offset).extract_from(
                     current_array.data_block(target_index + offset),
                     hash,
                     old_writer,
@@ -1101,15 +1100,9 @@ where
         }
 
         // Allocate memory.
-        for (i, d) in distribution.iter().enumerate() {
+        for (i, d) in dist.iter().chain(extended_dist.iter()).enumerate() {
             if *d != 0 {
                 let bucket = current_array.bucket(target_index + i);
-                bucket.reserve_slots((*d) as usize, guard);
-            }
-        }
-        for (i, d) in extended_distribution.iter().enumerate() {
-            if *d != 0 {
-                let bucket = current_array.bucket(target_index + i + 8);
                 bucket.reserve_slots((*d) as usize, guard);
             }
         }
@@ -1131,8 +1124,7 @@ where
             } else {
                 current_array.calculate_bucket_index(hash)
             };
-            let bucket = current_array.bucket(index);
-            bucket.extract_from(
+            current_array.bucket(index).extract_from(
                 current_array.data_block(index),
                 hash,
                 old_writer,

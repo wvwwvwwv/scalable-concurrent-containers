@@ -416,24 +416,10 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     ) {
         debug_assert!(self.rw_lock.is_locked(Relaxed));
 
-        // Copy the data without modifying the original entry.
-        let entry = if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
-            Self::read_data_block(&link.data_block, from_entry_ptr.current_index)
-        } else {
-            Self::read_data_block(
-                unsafe { from_data_block.as_ref() },
-                from_entry_ptr.current_index,
-            )
-        };
-        if let Err(entry) = self.insert(data_block, hash, entry, guard) {
-            self.insert_overflow(hash, entry, guard);
-        }
+        let from_len = from_writer.len.load(Relaxed);
+        from_writer.len.store(from_len - 1, Relaxed);
 
-        // Remove the entry from the old bucket.
-        from_writer
-            .len
-            .store(from_writer.len.load(Relaxed) - 1, Relaxed);
-        if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
+        let entry = if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
             let occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
             debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
 
@@ -441,6 +427,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 occupied_bitmap & !(1_u32 << from_entry_ptr.current_index),
                 Relaxed,
             );
+            Self::read_data_block(&link.data_block, from_entry_ptr.current_index)
         } else {
             let occupied_bitmap = from_writer.metadata.occupied_bitmap.load(Relaxed);
             debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
@@ -449,6 +436,14 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 occupied_bitmap & !(1_u32 << from_entry_ptr.current_index),
                 Relaxed,
             );
+            Self::read_data_block(
+                unsafe { from_data_block.as_ref() },
+                from_entry_ptr.current_index,
+            )
+        };
+
+        if let Err(entry) = self.insert(data_block, hash, entry, guard) {
+            self.insert_overflow(hash, entry, guard);
         }
     }
 
