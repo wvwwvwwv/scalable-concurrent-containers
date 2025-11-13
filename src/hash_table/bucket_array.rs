@@ -15,8 +15,8 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
     buckets: NonNull<Bucket<K, V, L, TYPE>>,
     data_blocks: NonNull<DataBlock<K, V, BUCKET_LEN>>,
     array_len: usize,
-    hash_offset: u16,
-    sample_size_mask: u16,
+    hash_offset: u8,
+    sample_size: u8,
     bucket_ptr_offset: u16,
     old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
     num_cleared_buckets: AtomicUsize,
@@ -35,7 +35,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             .next_power_of_two()
             .max(Self::minimum_capacity());
         let array_len = adjusted_capacity / BUCKET_LEN;
-        let log2_array_len = u16::try_from(array_len.trailing_zeros()).unwrap_or(0);
+        let log2_array_len = u8::try_from(array_len.trailing_zeros()).unwrap_or(0);
         assert_eq!(1_usize << log2_array_len, array_len);
 
         let alignment = align_of::<Bucket<K, V, L, TYPE>>();
@@ -83,12 +83,15 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             };
             *alloc_guard = true;
 
+            // `array_len = 2 -> 1`, `array_len = 4 -> 2`, `array_len = 8 -> 4`.
+            let sample_size = log2_array_len.next_power_of_two();
+
             Self {
                 buckets,
                 data_blocks,
                 array_len,
-                hash_offset: u16::try_from(u64::BITS).unwrap_or(64) - log2_array_len,
-                sample_size_mask: log2_array_len.next_power_of_two() - 1,
+                hash_offset: u8::try_from(u64::BITS).unwrap_or(64) - log2_array_len,
+                sample_size,
                 bucket_ptr_offset: bucket_array_ptr_offset,
                 old_array,
                 num_cleared_buckets: AtomicUsize::new(0),
@@ -129,17 +132,18 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         &self.num_cleared_buckets
     }
 
-    /// Checks if the bucket is allowed to initiate sampling.
+    /// Checks if the key is eligible to initiate sampling.
+    #[allow(clippy::cast_possible_truncation)] // Intended truncation.
     #[inline]
-    pub(crate) const fn initiate_sampling(&self, index: usize) -> bool {
-        (index & self.sample_size_mask as usize) == 0
+    pub(crate) const fn initiate_sampling(&self, hash: u64) -> bool {
+        (hash as u8 & (self.sample_size - 1)) == 0
     }
 
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) const fn sample_size(&self) -> usize {
         // `Log2(array_len)`: if `array_len` is sufficiently large, expected error is `~3%`.
-        (self.sample_size_mask + 1) as usize
+        self.sample_size as usize
     }
 
     /// Returns the recommended full sampling size.

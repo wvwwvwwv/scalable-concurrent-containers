@@ -1182,7 +1182,7 @@ impl LruList for () {}
 impl DoublyLinkedList {
     /// Reads the slot.
     #[inline]
-    fn read(&self, index: usize) -> (u8, u8) {
+    const fn read(&self, index: usize) -> (u8, u8) {
         unsafe { *self.0[index].get() }
     }
 

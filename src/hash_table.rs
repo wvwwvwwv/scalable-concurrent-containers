@@ -200,11 +200,7 @@ where
     ) -> usize {
         let mut num_entries = 0;
         for i in sampling_index..(sampling_index + sample_size) {
-            let len = current_array.bucket(i % current_array.len()).len();
-            num_entries += len;
-            if len > BUCKET_LEN {
-                num_entries += 1;
-            }
+            num_entries += current_array.bucket(i % current_array.len()).len();
         }
         num_entries * (current_array.len() / sample_size)
     }
@@ -388,8 +384,8 @@ where
 
             let bucket = current_array.bucket(bucket_index);
             if (TYPE != CACHE || current_array.num_slots() < self.maximum_capacity())
-                && current_array.initiate_sampling(bucket_index)
                 && bucket.len() >= BUCKET_LEN - 1
+                && current_array.initiate_sampling(hash)
             {
                 self.try_enlarge(
                     current_array,
@@ -437,8 +433,8 @@ where
 
             let bucket = current_array.bucket(bucket_index);
             if (TYPE != CACHE || current_array.num_slots() < self.maximum_capacity())
-                && current_array.initiate_sampling(bucket_index)
                 && bucket.len() >= BUCKET_LEN - 1
+                && current_array.initiate_sampling(hash)
             {
                 self.try_enlarge(current_array, bucket_index, bucket.len(), guard);
             }
@@ -811,8 +807,8 @@ where
 
             let mut bucket = current_array.bucket(bucket_index);
             if (TYPE != CACHE || current_array.num_slots() < self.maximum_capacity())
-                && current_array.initiate_sampling(bucket_index)
                 && bucket.len() >= BUCKET_LEN - 1
+                && current_array.initiate_sampling(hash)
             {
                 self.try_enlarge(current_array, bucket_index, bucket.len(), guard);
                 bucket = current_array.bucket(bucket_index);
@@ -1326,8 +1322,8 @@ where
         guard: &Guard,
     ) {
         if !current_array.has_old_array() {
-            // Try to grow if the estimated load factor is greater than `13/16`.
-            let threshold = current_array.sample_size() * (BUCKET_LEN / 16) * 13;
+            // Try to grow if the estimated load factor is greater than `25/32`.
+            let threshold = current_array.sample_size() * (BUCKET_LEN / 32) * 25;
             if num_entries > threshold
                 || (1..current_array.sample_size()).any(|i| {
                     num_entries += current_array
@@ -1410,9 +1406,9 @@ where
         let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
 
         let new_capacity =
-            if capacity < minimum_capacity || estimated_num_entries >= (capacity / 16) * 13 {
+            if capacity < minimum_capacity || estimated_num_entries >= (capacity / 32) * 25 {
                 // Double the capacity if the estimated load factor is equal to or greater than
-                // `13/16`; `~10%` of buckets are expected to have overflow buckets.
+                // `25/32`; `~7%` of buckets are expected to have overflow buckets.
                 if capacity == self.maximum_capacity() {
                     // Do not resize if the capacity cannot be increased.
                     capacity
@@ -1439,8 +1435,9 @@ where
 
         let try_resize = new_capacity != capacity;
         let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
-        let try_rebuild =
-            TYPE == INDEX && !try_resize && Self::check_rebuild(current_array, 0, sample_size);
+        let try_rebuild = TYPE == INDEX
+            && !try_resize
+            && Self::check_rebuild(current_array, sampling_index, sample_size);
 
         if !try_resize && !try_drop_table && !try_rebuild {
             // Nothing to do.
@@ -1650,9 +1647,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
     ) where
         H: BuildHasher,
     {
-        if self.bucket_array().initiate_sampling(self.bucket_index)
-            && (self.writer.need_rebuild() || self.writer.len() <= 1)
-        {
+        if self.writer.need_rebuild() || self.writer.len() == 0 {
             if let Some(current_array) = hash_table.bucket_array().load(Acquire, guard).as_ref() {
                 if ptr::eq(current_array, self.bucket_array()) {
                     let bucket_index = self.bucket_index;
