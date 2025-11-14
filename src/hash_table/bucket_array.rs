@@ -66,10 +66,8 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             .unwrap();
 
             // In case the below data block allocation fails, deallocate the bucket array.
-            let mut alloc_guard = ExitGuard::new(false, |allocated| {
-                if !allocated {
-                    dealloc(unaligned_bucket_array_ptr.cast::<u8>().as_ptr(), layout);
-                }
+            let alloc_guard = ExitGuard::new((), |()| {
+                dealloc(unaligned_bucket_array_ptr.cast::<u8>().as_ptr(), layout);
             });
 
             let Some(data_blocks) =
@@ -77,7 +75,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             else {
                 panic!("memory allocation failure: {data_block_array_layout:?}");
             };
-            *alloc_guard = true;
+            alloc_guard.forget();
 
             #[cfg(feature = "loom")]
             for i in 0..array_len {

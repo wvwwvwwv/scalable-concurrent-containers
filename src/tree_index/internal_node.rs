@@ -605,10 +605,8 @@ where
                 .store(ptr::from_ref(full_node_key).cast_mut(), Relaxed);
         }
 
-        let mut exit_guard = ExitGuard::new(true, |rollback| {
-            if rollback {
-                self.rollback(guard);
-            }
+        let exit_guard = ExitGuard::new((), |()| {
+            self.rollback(guard);
         });
         match target {
             Node::Internal(full_internal_node) => {
@@ -843,11 +841,11 @@ where
             }
             InsertResult::Full(..) | InsertResult::Retired(..) => {
                 // Insertion failed: expects that the parent splits this node.
-                *exit_guard = false;
+                exit_guard.forget();
                 return Ok(InsertResult::Full(entry.0, entry.1));
             }
         }
-        *exit_guard = false;
+        exit_guard.forget();
 
         // Replace the full node with the high-key node.
         let unused_node = full_node

@@ -804,12 +804,10 @@ where
         let target = full_leaf_ptr.as_ref().unwrap();
 
         // Distribute entries to two leaves after make the target retired.
-        let mut exit_guard = ExitGuard::new(true, |rollback| {
-            if rollback {
-                target.thaw();
-                self.split_op.reset();
-                self.lock.release_lock();
-            }
+        let exit_guard = ExitGuard::new((), |()| {
+            target.thaw();
+            self.split_op.reset();
+            self.lock.release_lock();
         });
 
         let mut low_key_leaf_shared = Shared::new(Leaf::new());
@@ -860,7 +858,7 @@ where
                     // Need to freeze the other leaf.
                     let frozen = high_key_leaf.freeze();
                     debug_assert!(frozen);
-                    *exit_guard = false;
+                    exit_guard.forget();
                     return Ok(InsertResult::Full(entry.0, entry.1));
                 }
             }
@@ -904,7 +902,7 @@ where
                 )
                 .0
         };
-        *exit_guard = false;
+        exit_guard.forget();
 
         let origin = self.split_op.reset();
         self.lock.release_lock();

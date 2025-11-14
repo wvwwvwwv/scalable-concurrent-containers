@@ -1204,12 +1204,9 @@ where
     ) {
         if let Some(old_array) = async_guard.load(current_array.bucket_link(), Acquire) {
             if let Some(current) = Self::start_incremental_rehash(old_array) {
-                let mut rehashing_guard =
-                    ExitGuard::new((old_array, current), |(old_array, prev)| {
-                        if prev != usize::MAX {
-                            Self::end_incremental_rehash(old_array, prev, false);
-                        }
-                    });
+                let rehashing_guard = ExitGuard::new((old_array, current), |(old_array, prev)| {
+                    Self::end_incremental_rehash(old_array, prev, false);
+                });
 
                 for bucket_index in
                     rehashing_guard.1..(rehashing_guard.1 + BUCKET_LEN).min(old_array.len())
@@ -1238,8 +1235,7 @@ where
                         self.defer_reclaim(bucket_array, async_guard.guard());
                     }
                 }
-                // `usize::MAX` indicates that the rehashing is complete.
-                rehashing_guard.1 = usize::MAX;
+                rehashing_guard.forget();
             }
         }
     }
@@ -1254,12 +1250,9 @@ where
     ) {
         if let Some(old_array) = current_array.old_array(guard).as_ref() {
             if let Some(current) = Self::start_incremental_rehash(old_array) {
-                let mut rehashing_guard =
-                    ExitGuard::new((old_array, current), |(old_array, prev)| {
-                        if prev != usize::MAX {
-                            Self::end_incremental_rehash(old_array, prev, false);
-                        }
-                    });
+                let rehashing_guard = ExitGuard::new((old_array, current), |(old_array, prev)| {
+                    Self::end_incremental_rehash(old_array, prev, false);
+                });
 
                 for bucket_index in
                     rehashing_guard.1..(rehashing_guard.1 + BUCKET_LEN).min(old_array.len())
@@ -1295,8 +1288,7 @@ where
                         self.defer_reclaim(bucket_array, guard);
                     }
                 }
-                // `usize::MAX` indicates that the rehashing is complete.
-                rehashing_guard.1 = usize::MAX;
+                rehashing_guard.forget();
             }
         }
     }

@@ -1,7 +1,7 @@
 //! This module implements a simplified but safe version of
 //! [`scopeguard`](https://crates.io/crates/scopeguard).
 
-use std::mem::ManuallyDrop;
+use std::mem::{ManuallyDrop, forget};
 use std::ops::{Deref, DerefMut};
 
 /// [`ExitGuard`] captures the environment and invokes a defined closure at the end of the scope.
@@ -16,6 +16,16 @@ impl<T, F: FnOnce(T)> ExitGuard<T, F> {
         Self {
             drop_callback: ManuallyDrop::new((captured, drop_callback)),
         }
+    }
+}
+
+impl<T, F: FnOnce(T)> ExitGuard<T, F> {
+    #[inline]
+    pub(crate) fn forget(mut self) {
+        unsafe {
+            ManuallyDrop::drop(&mut self.drop_callback);
+        }
+        forget(self);
     }
 }
 
