@@ -685,9 +685,8 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let async_guard = pin!(AsyncGuard::default());
         let hash = self.hash(key);
-
+        let async_guard = pin!(AsyncGuard::default());
         self.reader_async(key, hash, reader, &async_guard).await
     }
 

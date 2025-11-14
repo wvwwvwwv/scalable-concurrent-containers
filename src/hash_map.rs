@@ -917,8 +917,8 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let async_guard = pin!(AsyncGuard::default());
         let hash = self.hash(key);
+        let async_guard = pin!(AsyncGuard::default());
         let mut locked_bucket = self.optional_writer_async(hash, &async_guard).await?;
         let mut entry_ptr = locked_bucket.search(key, hash, async_guard.guard());
         if entry_ptr.is_valid() && condition(&mut locked_bucket.entry_mut(&mut entry_ptr).1) {
@@ -984,8 +984,8 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let async_guard = pin!(AsyncGuard::default());
         let hash = self.hash(key);
+        let async_guard = pin!(AsyncGuard::default());
         let locked_bucket = self.optional_writer_async(hash, &async_guard).await?;
         let guard = self.prolonged_guard_ref(async_guard.guard());
         let entry_ptr = locked_bucket.search(key, hash, guard);
@@ -1058,8 +1058,8 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let async_guard = pin!(AsyncGuard::default());
         let hash = self.hash(key);
+        let async_guard = pin!(AsyncGuard::default());
         self.reader_async(key, hash, reader, &async_guard).await
     }
 

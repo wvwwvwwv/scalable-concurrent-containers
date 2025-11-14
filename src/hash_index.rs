@@ -2144,7 +2144,7 @@ where
         loop {
             if let Some(bucket) = self.bucket.take() {
                 // Move to the next entry in the bucket.
-                if bucket.len() != 0 && self.entry_ptr.move_to_next(bucket, self.guard) {
+                if self.entry_ptr.move_to_next(bucket, self.guard) {
                     let (k, v) = self.entry_ptr.get(array.data_block(self.index));
                     self.bucket.replace(bucket);
                     return Some((k, v));
