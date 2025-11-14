@@ -276,12 +276,17 @@ where
         &self,
         key: &Q,
         hash: u64,
-        f: F,
+        mut f: F,
         async_guard: &AsyncGuard,
     ) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        match self.try_read(key, hash, f, async_guard.guard()) {
+            Ok(result) => return Some(result),
+            Err(returned) => f = returned,
+        }
+
         while let Some(current_array) = async_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
@@ -296,20 +301,6 @@ where
             }
 
             let bucket = current_array.bucket(index);
-            if let Some(reader) = Reader::try_lock(bucket) {
-                // The compiler is not efficient enough to eliminate unnecessary await points even
-                // though `try_lock` is called during `lock_async`; it is a manual optimization to
-                // avoid awaiting a future.
-                if let Some(entry) = reader.search_entry(
-                    current_array.data_block(index),
-                    key,
-                    hash,
-                    async_guard.guard(),
-                ) {
-                    return Some(f(&entry.0, &entry.1));
-                }
-                break;
-            }
             if let Some(reader) = Reader::lock_async(bucket, async_guard).await {
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
@@ -332,12 +323,17 @@ where
         &self,
         key: &Q,
         hash: u64,
-        f: F,
+        mut f: F,
         guard: &Guard,
     ) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        match self.try_read(key, hash, f, guard) {
+            Ok(result) => return Some(result),
+            Err(returned) => f = returned,
+        }
+
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -359,6 +355,32 @@ where
         None
     }
 
+    /// Tries to read an entry from the [`HashTable`] with a shared lock acquired on the bucket.
+    #[inline]
+    fn try_read<Q, R, F: FnOnce(&K, &V) -> R>(
+        &self,
+        key: &Q,
+        hash: u64,
+        f: F,
+        guard: &Guard,
+    ) -> Result<R, F>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
+            let index = current_array.calculate_bucket_index(hash);
+            let bucket = current_array.bucket(index);
+            if let Some(reader) = Reader::try_lock(bucket) {
+                if let Some(entry) =
+                    reader.search_entry(current_array.data_block(index), key, hash, guard)
+                {
+                    return Ok(f(&entry.0, &entry.1));
+                }
+            }
+        }
+        Err(f)
+    }
+
     /// Returns a [`LockedBucket`] for writing an entry asynchronously.
     ///
     /// If the container is empty, a new bucket array is allocated.
@@ -368,6 +390,10 @@ where
         hash: u64,
         async_guard: &AsyncGuard,
     ) -> LockedBucket<K, V, L, TYPE> {
+        if let Some(locked_bucket) = self.try_optional_writer::<true>(hash, async_guard.guard()) {
+            return locked_bucket;
+        }
+
         loop {
             let current_array = self.get_or_create_bucket_array(async_guard.guard());
             let bucket_index = current_array.calculate_bucket_index(hash);
@@ -395,17 +421,6 @@ where
                 );
             }
 
-            if let Ok(Some(writer)) = Writer::try_lock(bucket) {
-                // The compiler is not efficient enough to eliminate unnecessary await points even
-                // though `try_lock` is called during `lock_async`; it is a manual optimization to
-                // avoid awaiting a future.
-                return LockedBucket {
-                    writer,
-                    data_block: current_array.data_block(bucket_index),
-                    bucket_index,
-                    bucket_array: into_non_null(current_array),
-                };
-            }
             if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
                 return LockedBucket {
                     writer,
@@ -422,6 +437,10 @@ where
     /// If the container is empty, a new bucket array is allocated.
     #[inline]
     fn writer_sync(&self, hash: u64, guard: &Guard) -> LockedBucket<K, V, L, TYPE> {
+        if let Some(locked_bucket) = self.try_optional_writer::<true>(hash, guard) {
+            return locked_bucket;
+        }
+
         loop {
             let current_array = self.get_or_create_bucket_array(guard);
             let bucket_index = current_array.calculate_bucket_index(hash);
@@ -459,6 +478,10 @@ where
         hash: u64,
         async_guard: &AsyncGuard,
     ) -> Option<LockedBucket<K, V, L, TYPE>> {
+        if let Some(locked_bucket) = self.try_optional_writer::<false>(hash, async_guard.guard()) {
+            return Some(locked_bucket);
+        }
+
         while let Some(current_array) = async_guard.load(self.bucket_array(), Acquire) {
             let bucket_index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
@@ -473,17 +496,6 @@ where
             }
 
             let bucket = current_array.bucket(bucket_index);
-            if let Ok(Some(writer)) = Writer::try_lock(bucket) {
-                // The compiler is not efficient enough to eliminate unnecessary await points even
-                // though `try_lock` is called during `lock_async`; it is a manual optimization to
-                // avoid awaiting a future.
-                return Some(LockedBucket {
-                    writer,
-                    data_block: current_array.data_block(bucket_index),
-                    bucket_index,
-                    bucket_array: into_non_null(current_array),
-                });
-            }
             if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
                 return Some(LockedBucket {
                     writer,
@@ -505,6 +517,10 @@ where
         hash: u64,
         guard: &Guard,
     ) -> Option<LockedBucket<K, V, L, TYPE>> {
+        if let Some(locked_bucket) = self.try_optional_writer::<false>(hash, guard) {
+            return Some(locked_bucket);
+        }
+
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let bucket_index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -515,6 +531,34 @@ where
 
             let bucket = current_array.bucket(bucket_index);
             if let Some(writer) = Writer::lock_sync(bucket) {
+                return Some(LockedBucket {
+                    writer,
+                    data_block: current_array.data_block(bucket_index),
+                    bucket_index,
+                    bucket_array: into_non_null(current_array),
+                });
+            }
+        }
+        None
+    }
+
+    /// Tries to returns a [`LockedBucket`] for writing an entry.
+    #[inline]
+    fn try_optional_writer<const CHECK_SIZE: bool>(
+        &self,
+        hash: u64,
+        guard: &Guard,
+    ) -> Option<LockedBucket<K, V, L, TYPE>> {
+        if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
+            if current_array.has_old_array() {
+                return None;
+            }
+            let bucket_index = current_array.calculate_bucket_index(hash);
+            let bucket = current_array.bucket(bucket_index);
+            if CHECK_SIZE && bucket.len() >= BUCKET_LEN {
+                return None;
+            }
+            if let Ok(Some(writer)) = Writer::try_lock(bucket) {
                 return Some(LockedBucket {
                     writer,
                     data_block: current_array.data_block(bucket_index),
@@ -1573,7 +1617,7 @@ impl<K, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> {
     ) -> EntryPtr<'g, K, V, TYPE> {
         if TYPE == INDEX {
             self.writer
-                .drop_removed_unreachable_entries(self.data_block, guard);
+                .try_drop_unreachable_entries(self.data_block, guard);
         }
         match self.writer.insert(self.data_block, hash, entry, guard) {
             Ok(entry_ptr) => entry_ptr,
@@ -1626,12 +1670,13 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         self.writer.mark_removed(entry_ptr, guard);
         if TYPE == INDEX {
             self.writer
-                .drop_removed_unreachable_entries(self.data_block, guard);
+                .try_drop_unreachable_entries(self.data_block, guard);
         }
         self.try_shrink_or_rebuild(hash_table, guard);
     }
 
     /// Tries to shrink or rebuild the container.
+    #[inline]
     pub(crate) fn try_shrink_or_rebuild<H, T: HashTable<K, V, H, L, TYPE>>(
         self,
         hash_table: &T,
@@ -1639,7 +1684,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
     ) where
         H: BuildHasher,
     {
-        if self.writer.need_rebuild() || self.writer.len() == 0 {
+        if (TYPE == INDEX && self.writer.need_rebuild()) || self.writer.len() == 0 {
             if let Some(current_array) = hash_table.bucket_array().load(Acquire, guard).as_ref() {
                 if ptr::eq(current_array, self.bucket_array()) {
                     let bucket_index = self.bucket_index;

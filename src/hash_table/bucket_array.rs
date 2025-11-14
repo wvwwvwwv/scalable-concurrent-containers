@@ -38,6 +38,9 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         let log2_array_len = u8::try_from(array_len.trailing_zeros()).unwrap_or(0);
         assert_eq!(1_usize << log2_array_len, array_len);
 
+        // `array_len = 2 -> 1`, `array_len = 4 -> 2`, `array_len = 8 -> 4`.
+        let sample_size = log2_array_len.next_power_of_two();
+
         let alignment = align_of::<Bucket<K, V, L, TYPE>>();
         let layout = Self::bucket_array_layout(array_len);
 
@@ -56,13 +59,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 .add(bucket_array_ptr_offset)
                 .cast::<Bucket<K, V, L, TYPE>>();
             let bucket_array_ptr_offset = u16::try_from(bucket_array_ptr_offset).unwrap_or(0);
-
-            #[cfg(feature = "loom")]
-            for i in 0..array_len {
-                // `loom` types need proper initialization.
-                buckets.add(i).write(Bucket::new());
-            }
-
             let data_block_array_layout = Layout::from_size_align(
                 size_of::<DataBlock<K, V, BUCKET_LEN>>() * array_len,
                 align_of::<[DataBlock<K, V, BUCKET_LEN>; 0]>(),
@@ -83,8 +79,11 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             };
             *alloc_guard = true;
 
-            // `array_len = 2 -> 1`, `array_len = 4 -> 2`, `array_len = 8 -> 4`.
-            let sample_size = log2_array_len.next_power_of_two();
+            #[cfg(feature = "loom")]
+            for i in 0..array_len {
+                // `loom` types need proper initialization.
+                buckets.add(i).write(Bucket::new());
+            }
 
             Self {
                 buckets,

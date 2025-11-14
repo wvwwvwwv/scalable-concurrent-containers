@@ -26,6 +26,30 @@ fn insert_single_sync(c: &mut Criterion) {
     });
 }
 
+fn insert_remove_single_async(c: &mut Criterion) {
+    c.bench_function("HashMap: insert_remove_single_async", |b| {
+        let hashmap: HashMap<u64, u64> = HashMap::default();
+        assert!(hashmap.insert_sync(0, 0).is_ok());
+        async fn test(hashmap: &HashMap<u64, u64>) {
+            assert!(hashmap.insert_async(1, 1).await.is_ok());
+            assert!(hashmap.remove_async(&1).await.is_some());
+        }
+        b.to_async(FuturesExecutor).iter(|| test(&hashmap));
+    });
+}
+
+fn insert_remove_single_sync(c: &mut Criterion) {
+    c.bench_function("HashMap: insert_remove_single_sync", |b| {
+        let hashmap: HashMap<u64, u64> = HashMap::default();
+        assert!(hashmap.insert_sync(0, 0).is_ok());
+        fn test(hashmap: &HashMap<u64, u64>) {
+            assert!(hashmap.insert_sync(1, 1).is_ok());
+            assert!(hashmap.remove_sync(&1).is_some());
+        }
+        b.iter(|| test(&hashmap));
+    });
+}
+
 fn insert_cold_async(c: &mut Criterion) {
     c.bench_function("HashMap: insert_cold_async", |b| {
         b.to_async(FuturesExecutor).iter_custom(async |iters| {
@@ -138,6 +162,8 @@ criterion_group!(
     hash_map,
     insert_single_async,
     insert_single_sync,
+    insert_remove_single_async,
+    insert_remove_single_sync,
     insert_cold_async,
     insert_cold_sync,
     insert_warmed_up_async,

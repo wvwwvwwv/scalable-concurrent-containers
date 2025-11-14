@@ -474,7 +474,8 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Drops removed entries if they are completely unreachable, allowing others to reuse
     /// the memory.
-    pub(super) fn drop_removed_unreachable_entries(
+    #[inline]
+    pub(super) fn try_drop_unreachable_entries(
         &self,
         data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         guard: &Guard,
@@ -483,25 +484,35 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         let prev_epoch = *Self::read_cell(&self.epoch);
         if prev_epoch.is_some_and(|e| !e.in_same_generation(guard.epoch())) {
-            let mut empty =
-                Self::cleanup_removed_entries(&self.metadata, unsafe { data_block.as_ref() });
-            let mut link_ptr = self.metadata.link.load(Acquire, guard);
-            while let Some(link) = link_ptr.as_ref() {
-                empty &= Self::cleanup_removed_entries(&link.metadata, &link.data_block);
-                let next_link_ptr = link.metadata.link.load(Acquire, guard);
-                if next_link_ptr.is_null() {
-                    self.cleanup_empty_link(link_ptr.as_ptr());
-                }
-                link_ptr = next_link_ptr;
-            }
-            if empty {
-                self.update_epoch(None);
-            }
+            self.drop_unreachable_entries(data_block, guard);
         }
     }
 
-    /// Clears removed entries if they are completely unreachable, allowing others to reuse
-    /// the memory.
+    /// Drops unreachable entries.
+    fn drop_unreachable_entries(
+        &self,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
+        guard: &Guard,
+    ) {
+        debug_assert_eq!(TYPE, INDEX);
+
+        let mut empty =
+            Self::cleanup_removed_entries(&self.metadata, unsafe { data_block.as_ref() });
+        let mut link_ptr = self.metadata.link.load(Acquire, guard);
+        while let Some(link) = link_ptr.as_ref() {
+            empty &= Self::cleanup_removed_entries(&link.metadata, &link.data_block);
+            let next_link_ptr = link.metadata.link.load(Acquire, guard);
+            if next_link_ptr.is_null() {
+                self.cleanup_empty_link(link_ptr.as_ptr());
+            }
+            link_ptr = next_link_ptr;
+        }
+        if empty {
+            self.update_epoch(None);
+        }
+    }
+
+    /// Drops unreachable entries in the supplied bucket.
     fn cleanup_removed_entries<const LEN: usize>(
         metadata: &Metadata<K, V, LEN>,
         data_block: &DataBlock<K, V, LEN>,
