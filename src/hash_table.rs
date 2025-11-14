@@ -305,6 +305,7 @@ where
                 ) {
                     return Some(f(&entry.0, &entry.1));
                 }
+                break;
             } else if let Some(reader) = Reader::lock_async(bucket, async_guard).await {
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
