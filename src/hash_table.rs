@@ -276,17 +276,12 @@ where
         &self,
         key: &Q,
         hash: u64,
-        mut f: F,
+        f: F,
         async_guard: &AsyncGuard,
     ) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        match self.try_read(key, hash, f, async_guard.guard()) {
-            Ok(result) => return Some(result),
-            Err(returned) => f = returned,
-        }
-
         while let Some(current_array) = async_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array() {
@@ -301,7 +296,16 @@ where
             }
 
             let bucket = current_array.bucket(index);
-            if let Some(reader) = Reader::lock_async(bucket, async_guard).await {
+            if let Some(reader) = Reader::try_lock(bucket) {
+                if let Some(entry) = reader.search_entry(
+                    current_array.data_block(index),
+                    key,
+                    hash,
+                    async_guard.guard(),
+                ) {
+                    return Some(f(&entry.0, &entry.1));
+                }
+            } else if let Some(reader) = Reader::lock_async(bucket, async_guard).await {
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
                     key,
@@ -323,17 +327,12 @@ where
         &self,
         key: &Q,
         hash: u64,
-        mut f: F,
+        f: F,
         guard: &Guard,
     ) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        match self.try_read(key, hash, f, guard) {
-            Ok(result) => return Some(result),
-            Err(returned) => f = returned,
-        }
-
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -353,32 +352,6 @@ where
             }
         }
         None
-    }
-
-    /// Tries to read an entry from the [`HashTable`] with a shared lock acquired on the bucket.
-    #[inline]
-    fn try_read<Q, R, F: FnOnce(&K, &V) -> R>(
-        &self,
-        key: &Q,
-        hash: u64,
-        f: F,
-        guard: &Guard,
-    ) -> Result<R, F>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
-            let index = current_array.calculate_bucket_index(hash);
-            let bucket = current_array.bucket(index);
-            if let Some(reader) = Reader::try_lock(bucket) {
-                if let Some(entry) =
-                    reader.search_entry(current_array.data_block(index), key, hash, guard)
-                {
-                    return Ok(f(&entry.0, &entry.1));
-                }
-            }
-        }
-        Err(f)
     }
 
     /// Returns a [`LockedBucket`] for writing an entry asynchronously.
