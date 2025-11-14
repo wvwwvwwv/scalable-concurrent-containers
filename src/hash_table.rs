@@ -145,10 +145,9 @@ where
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let old_array_ptr = current_array.old_array(guard);
             if let Some(old_array) = old_array_ptr.as_ref() {
-                if !self.incremental_rehash_sync::<true>(current_array, guard) {
-                    for i in 0..old_array.len() {
-                        num_entries = num_entries.saturating_add(old_array.bucket(i).len());
-                    }
+                self.incremental_rehash_sync::<true>(current_array, guard);
+                for i in 0..old_array.len() {
+                    num_entries = num_entries.saturating_add(old_array.bucket(i).len());
                 }
             }
             for i in 0..current_array.len() {
@@ -169,11 +168,10 @@ where
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let old_array_ptr = current_array.old_array(guard);
             if let Some(old_array) = old_array_ptr.as_ref() {
-                if !self.incremental_rehash_sync::<true>(current_array, guard) {
-                    for i in 0..old_array.len() {
-                        if old_array.bucket(i).len() != 0 {
-                            return true;
-                        }
+                self.incremental_rehash_sync::<true>(current_array, guard);
+                for i in 0..old_array.len() {
+                    if old_array.bucket(i).len() != 0 {
+                        return true;
                     }
                 }
             }
@@ -234,23 +232,20 @@ where
 
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
-            let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if !self.incremental_rehash_sync::<true>(current_array, guard)
-                    && !self.dedup_bucket_sync::<true>(current_array, old_array, index, guard)
-                {
-                    let index = old_array.calculate_bucket_index(hash);
-                    if let Some(entry) = old_array.bucket(index).search_entry(
-                        old_array.data_block(index),
-                        key,
-                        hash,
-                        guard,
-                    ) {
-                        return Some(entry);
-                    }
+                self.incremental_rehash_sync::<true>(current_array, guard);
+                let index = old_array.calculate_bucket_index(hash);
+                if let Some(entry) = old_array.bucket(index).search_entry(
+                    old_array.data_block(index),
+                    key,
+                    hash,
+                    guard,
+                ) {
+                    return Some(entry);
                 }
             }
 
+            let index = current_array.calculate_bucket_index(hash);
             if let Some(entry) = current_array.bucket(index).search_entry(
                 current_array.data_block(index),
                 key,
@@ -337,9 +332,8 @@ where
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if !self.incremental_rehash_sync::<false>(current_array, guard) {
-                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
-                }
+                self.incremental_rehash_sync::<false>(current_array, guard);
+                self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
             }
 
             let bucket = current_array.bucket(index);
@@ -419,9 +413,8 @@ where
             let current_array = self.get_or_create_bucket_array(guard);
             let bucket_index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if !self.incremental_rehash_sync::<false>(current_array, guard) {
-                    self.dedup_bucket_sync::<false>(current_array, old_array, bucket_index, guard);
-                }
+                self.incremental_rehash_sync::<false>(current_array, guard);
+                self.dedup_bucket_sync::<false>(current_array, old_array, bucket_index, guard);
             }
 
             let bucket = current_array.bucket(bucket_index);
@@ -498,9 +491,8 @@ where
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let bucket_index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if !self.incremental_rehash_sync::<false>(current_array, guard) {
-                    self.dedup_bucket_sync::<false>(current_array, old_array, bucket_index, guard);
-                }
+                self.incremental_rehash_sync::<false>(current_array, guard);
+                self.dedup_bucket_sync::<false>(current_array, old_array, bucket_index, guard);
             }
 
             let bucket = current_array.bucket(bucket_index);
@@ -626,9 +618,8 @@ where
             while start_index < current_array.len() {
                 let index = start_index;
                 if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                    if !self.incremental_rehash_sync::<false>(current_array, guard) {
-                        self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
-                    }
+                    self.incremental_rehash_sync::<false>(current_array, guard);
+                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
                 }
 
                 let bucket = current_array.bucket(index);
@@ -761,14 +752,8 @@ where
             while start_index < current_array_len {
                 let bucket_index = start_index;
                 if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                    if !self.incremental_rehash_sync::<false>(current_array, guard) {
-                        self.dedup_bucket_sync::<false>(
-                            current_array,
-                            old_array,
-                            bucket_index,
-                            guard,
-                        );
-                    }
+                    self.incremental_rehash_sync::<false>(current_array, guard);
+                    self.dedup_bucket_sync::<false>(current_array, old_array, bucket_index, guard);
                 }
 
                 let bucket = current_array.bucket(bucket_index);
@@ -811,14 +796,8 @@ where
             let current_array = self.get_or_create_bucket_array(guard);
             let bucket_index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if !self.incremental_rehash_sync::<true>(current_array, guard)
-                    && !self.dedup_bucket_sync::<true>(
-                        current_array,
-                        old_array,
-                        bucket_index,
-                        guard,
-                    )
-                {
+                self.incremental_rehash_sync::<true>(current_array, guard);
+                if !self.dedup_bucket_sync::<true>(current_array, old_array, bucket_index, guard) {
                     return None;
                 }
             }
@@ -1272,7 +1251,7 @@ where
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
         guard: &'g Guard,
-    ) -> bool {
+    ) {
         if let Some(old_array) = current_array.old_array(guard).as_ref() {
             if let Some(current) = Self::start_incremental_rehash(old_array) {
                 let mut rehashing_guard =
@@ -1288,7 +1267,7 @@ where
                     let old_bucket = rehashing_guard.0.bucket(bucket_index);
                     let writer = if TRY_LOCK {
                         let Ok(writer) = Writer::try_lock(old_bucket) else {
-                            return false;
+                            return;
                         };
                         writer
                     } else {
@@ -1302,7 +1281,7 @@ where
                             writer,
                             guard,
                         ) {
-                            return false;
+                            return;
                         }
                     }
                 }
@@ -1320,7 +1299,6 @@ where
                 rehashing_guard.1 = usize::MAX;
             }
         }
-        !current_array.has_old_array()
     }
 
     /// Tries to enlarge [`HashTable`] if the estimated load factor is greater than `7/8`.

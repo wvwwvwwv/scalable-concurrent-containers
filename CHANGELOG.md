@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.4.2
+
+* Minor optimization.
+
 3.4.1
 
 * Migrate `Bag`, `LinkedList`, `Queue`, and `Stack` to `sdd`.

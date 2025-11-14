@@ -798,6 +798,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        self.reclaim_memory(guard);
         self.peek_entry(key, self.hash(key), guard).map(|(_, v)| v)
     }
 
