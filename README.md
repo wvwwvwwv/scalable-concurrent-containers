@@ -4,7 +4,7 @@
 ![Crates.io](https://img.shields.io/crates/l/scc)
 ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/wvwwvwwv/scalable-concurrent-containers/scc.yml?branch=main)
 
-A collection of high-performance containers and utilities providing both asynchronous and synchronous interfaces.
+A collection of high-performance containers providing both asynchronous and synchronous interfaces.
 
 #### Features
 

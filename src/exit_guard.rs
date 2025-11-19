@@ -17,9 +17,8 @@ impl<T, F: FnOnce(T)> ExitGuard<T, F> {
             drop_callback: ManuallyDrop::new((captured, drop_callback)),
         }
     }
-}
 
-impl<T, F: FnOnce(T)> ExitGuard<T, F> {
+    /// Forgets the [`ExitGuard`] without invoking the drop callback.
     #[inline]
     pub(crate) fn forget(mut self) {
         unsafe {
