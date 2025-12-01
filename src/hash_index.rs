@@ -520,11 +520,10 @@ where
         self.reclaim_memory(async_guard.guard());
         let locked_bucket = self.writer_async(hash, &async_guard).await;
         let guard = async_guard.guard();
-        let partial_hash = hash;
         if locked_bucket.search(&key, hash, guard).is_valid() {
             Err((key, val))
         } else {
-            locked_bucket.insert(partial_hash, (key, val), guard);
+            locked_bucket.insert(hash, (key, val), guard);
             Ok(())
         }
     }

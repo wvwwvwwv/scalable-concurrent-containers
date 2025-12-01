@@ -1563,10 +1563,7 @@ impl<K, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> {
             self.writer
                 .try_drop_unreachable_entries(self.data_block, guard);
         }
-        match self.writer.insert(self.data_block, hash, entry, guard) {
-            Ok(entry_ptr) => entry_ptr,
-            Err(entry) => self.writer.insert_overflow(hash, entry, guard),
-        }
+        self.writer.insert(self.data_block, hash, entry, guard)
     }
 }
 
