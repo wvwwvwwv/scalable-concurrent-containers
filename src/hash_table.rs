@@ -187,34 +187,38 @@ where
         false
     }
 
-    /// Estimates the number of entries by sampling the specified number of buckets.
-    ///
-    /// The number of entries is overestimated if buckets contain overflow buckets.
+    /// Estimates the number of entries by sampling buckets.
     #[inline]
-    fn sample(
-        current_array: &BucketArray<K, V, L, TYPE>,
-        sampling_index: usize,
-        sample_size: usize,
-    ) -> usize {
+    fn sample(current_array: &BucketArray<K, V, L, TYPE>, sampling_index: usize) -> usize {
+        let sample_size = current_array.sample_size();
+        let sample_1 = sampling_index & (!(sample_size - 1));
+        let sample_2 = if sample_1 == 0 {
+            current_array.len() - sample_size
+        } else {
+            0
+        };
         let mut num_entries = 0;
-        for i in sampling_index..(sampling_index + sample_size) {
-            num_entries += current_array.bucket(i % current_array.len()).len();
+        for i in (sample_1..sample_1 + sample_size).chain(sample_2..(sample_2 + sample_size)) {
+            num_entries += current_array.bucket(i).len();
         }
-        num_entries * (current_array.len() / sample_size)
+        num_entries * (current_array.len() / (sample_size * 2))
     }
 
     /// Checks whether rebuilding the entire hash table is required.
     #[inline]
-    fn check_rebuild(
-        current_array: &BucketArray<K, V, L, TYPE>,
-        sampling_index: usize,
-        sample_size: usize,
-    ) -> bool {
+    fn check_rebuild(current_array: &BucketArray<K, V, L, TYPE>, sampling_index: usize) -> bool {
+        let sample_size = current_array.sample_size();
+        let sample_1 = sampling_index & (!(sample_size - 1));
+        let sample_2 = if sample_1 == 0 {
+            current_array.len() - sample_size
+        } else {
+            0
+        };
         let mut num_buckets_to_rebuild = 0;
-        for i in sampling_index..(sampling_index + sample_size) {
-            if current_array.bucket(i % current_array.len()).need_rebuild() {
+        for i in (sample_1..sample_1 + sample_size).chain(sample_2..(sample_2 + sample_size)) {
+            if current_array.bucket(i).need_rebuild() {
                 num_buckets_to_rebuild += 1;
-                if num_buckets_to_rebuild >= sample_size / 2 {
+                if num_buckets_to_rebuild >= sample_size {
                     return true;
                 }
             }
@@ -1382,8 +1386,7 @@ where
 
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();
-        let sample_size = current_array.full_sample_size();
-        let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
+        let estimated_num_entries = Self::sample(current_array, sampling_index);
 
         let new_capacity =
             if capacity < minimum_capacity || estimated_num_entries >= (capacity / 32) * 25 {
@@ -1415,9 +1418,8 @@ where
 
         let try_resize = new_capacity != capacity;
         let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
-        let try_rebuild = TYPE == INDEX
-            && !try_resize
-            && Self::check_rebuild(current_array, sampling_index, sample_size);
+        let try_rebuild =
+            TYPE == INDEX && !try_resize && Self::check_rebuild(current_array, sampling_index);
 
         if !try_resize && !try_drop_table && !try_rebuild {
             // Nothing to do.

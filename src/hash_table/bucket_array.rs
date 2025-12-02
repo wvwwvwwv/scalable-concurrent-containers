@@ -143,13 +143,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         self.sample_size as usize
     }
 
-    /// Returns the recommended full sampling size.
-    #[inline]
-    pub(crate) const fn full_sample_size(&self) -> usize {
-        // `Log2(array_len) * 2`: if `array_len` is sufficiently large, expected error is `~2%`.
-        self.sample_size() * 2
-    }
-
     /// Returns a reference to a [`Bucket`] at the given position.
     #[inline]
     pub(crate) const fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
