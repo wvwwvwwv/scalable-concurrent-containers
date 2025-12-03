@@ -1122,10 +1122,10 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert_eq!(hashindex.capacity_range(), 0..=(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashindex.capacity_range(), 0..=(1_usize << (usize::BITS - 2)));
     ///
     /// let reserved = hashindex.reserve(1000);
-    /// assert_eq!(hashindex.capacity_range(), 1000..=(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashindex.capacity_range(), 1000..=(1_usize << (usize::BITS - 2)));
     /// ```
     #[inline]
     pub fn capacity_range(&self) -> RangeInclusive<usize> {
@@ -1213,7 +1213,7 @@ where
             {
                 while let Some(garbage_bucket_array) = garbage_head {
                     garbage_head = garbage_bucket_array
-                        .bucket_link()
+                        .linked_array_var()
                         .swap((None, Tag::None), Acquire)
                         .0;
                     let dropped = unsafe { garbage_bucket_array.drop_in_place() };
@@ -1341,7 +1341,7 @@ where
         let mut garbage_head = self.garbage_chain.swap((None, Tag::None), Acquire).0;
         while let Some(garbage_bucket_array) = garbage_head {
             garbage_head = garbage_bucket_array
-                .bucket_link()
+                .linked_array_var()
                 .swap((None, Tag::None), Acquire)
                 .0;
             let dropped = unsafe { garbage_bucket_array.drop_in_place() };
@@ -1391,17 +1391,17 @@ where
         };
         // The bucket array will be dropped when the epoch enters the next generation.
         bucket_array
-            .bucket_link()
+            .linked_array_var()
             .swap((Some(prev_head), Tag::None), Release);
     }
 
     #[inline]
-    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), INDEX>> {
+    fn bucket_array_var(&self) -> &AtomicShared<BucketArray<K, V, (), INDEX>> {
         &self.bucket_array
     }
 
     #[inline]
-    fn minimum_capacity(&self) -> &AtomicUsize {
+    fn minimum_capacity_var(&self) -> &AtomicUsize {
         &self.minimum_capacity
     }
 }
@@ -2125,10 +2125,10 @@ where
             // Start scanning.
             let current_array = self
                 .hashindex
-                .bucket_array()
+                .bucket_array_var()
                 .load(Acquire, self.guard)
                 .as_ref()?;
-            let old_array_ptr = current_array.old_array(self.guard);
+            let old_array_ptr = current_array.linked_array(self.guard);
             let array = if let Some(old_array) = old_array_ptr.as_ref() {
                 old_array
             } else {
@@ -2156,7 +2156,7 @@ where
                 self.index = 0;
                 let current_array = self
                     .hashindex
-                    .bucket_array()
+                    .bucket_array_var()
                     .load(Acquire, self.guard)
                     .as_ref()?;
                 if self
@@ -2168,7 +2168,7 @@ where
                     break;
                 }
 
-                array = if let Some(old_array) = current_array.old_array(self.guard).as_ref() {
+                array = if let Some(old_array) = current_array.linked_array(self.guard) {
                     if self
                         .bucket_array
                         .as_ref()

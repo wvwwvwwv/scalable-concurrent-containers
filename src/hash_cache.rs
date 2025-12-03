@@ -12,10 +12,11 @@ use std::sync::atomic::Ordering::Relaxed;
 use sdd::{AtomicShared, Guard, Shared, Tag};
 
 use super::Equivalent;
+use super::async_helper::AsyncGuard;
+use super::hash_table::MAXIMUM_CAPACITY_LIMIT;
 use super::hash_table::bucket::{CACHE, DoublyLinkedList, EntryPtr};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedBucket};
-use crate::async_helper::AsyncGuard;
 
 /// Scalable concurrent 32-way associative cache backed by [`HashMap`](super::HashMap).
 ///
@@ -189,7 +190,7 @@ where
         let maximum_capacity = maximum_capacity
             .max(minimum_capacity.load(Relaxed))
             .max(BucketArray::<K, V, DoublyLinkedList, CACHE>::minimum_capacity())
-            .min(1_usize << (usize::BITS - 1))
+            .min(MAXIMUM_CAPACITY_LIMIT)
             .next_power_of_two();
         HashCache {
             bucket_array: array,
@@ -1329,12 +1330,12 @@ where
     }
 
     #[inline]
-    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, DoublyLinkedList, CACHE>> {
+    fn bucket_array_var(&self) -> &AtomicShared<BucketArray<K, V, DoublyLinkedList, CACHE>> {
         &self.bucket_array
     }
 
     #[inline]
-    fn minimum_capacity(&self) -> &AtomicUsize {
+    fn minimum_capacity_var(&self) -> &AtomicUsize {
         &self.minimum_capacity
     }
 

@@ -1486,10 +1486,10 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert_eq!(hashmap.capacity_range(), 0..=(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashmap.capacity_range(), 0..=(1_usize << (usize::BITS - 2)));
     ///
     /// let reserved = hashmap.reserve(1000);
-    /// assert_eq!(hashmap.capacity_range(), 1000..=(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashmap.capacity_range(), 1000..=(1_usize << (usize::BITS - 2)));
     /// ```
     #[inline]
     pub fn capacity_range(&self) -> RangeInclusive<usize> {
@@ -1670,12 +1670,12 @@ where
     }
 
     #[inline]
-    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), MAP>> {
+    fn bucket_array_var(&self) -> &AtomicShared<BucketArray<K, V, (), MAP>> {
         &self.bucket_array
     }
 
     #[inline]
-    fn minimum_capacity(&self) -> &AtomicUsize {
+    fn minimum_capacity_var(&self) -> &AtomicUsize {
         &self.minimum_capacity
     }
 }

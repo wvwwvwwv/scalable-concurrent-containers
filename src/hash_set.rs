@@ -744,10 +744,10 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert_eq!(hashset.capacity_range(), 0..=(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashset.capacity_range(), 0..=(1_usize << (usize::BITS - 2)));
     ///
     /// let reserved = hashset.reserve(1000);
-    /// assert_eq!(hashset.capacity_range(), 1000..=(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashset.capacity_range(), 1000..=(1_usize << (usize::BITS - 2)));
     /// ```
     #[inline]
     pub fn capacity_range(&self) -> RangeInclusive<usize> {
