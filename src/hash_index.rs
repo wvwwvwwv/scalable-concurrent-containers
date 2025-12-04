@@ -2090,7 +2090,7 @@ where
         debug_assert!(result >= self.additional);
 
         let guard = Guard::new();
-        if let Some(current_array) = self.hashindex.bucket_array.load(Acquire, &guard).as_ref() {
+        if let Some(current_array) = self.hashindex.bucket_array(&guard) {
             self.try_shrink_or_rebuild(current_array, 0, &guard);
         }
     }
@@ -2123,13 +2123,8 @@ where
             array
         } else {
             // Start scanning.
-            let current_array = self
-                .hashindex
-                .bucket_array_var()
-                .load(Acquire, self.guard)
-                .as_ref()?;
-            let old_array_ptr = current_array.linked_array(self.guard);
-            let array = if let Some(old_array) = old_array_ptr.as_ref() {
+            let current_array = self.hashindex.bucket_array(self.guard)?;
+            let array = if let Some(old_array) = current_array.linked_array(self.guard) {
                 old_array
             } else {
                 current_array
@@ -2154,11 +2149,7 @@ where
             if self.index + 1 == array.len() {
                 // Move to a newer bucket array.
                 self.index = 0;
-                let current_array = self
-                    .hashindex
-                    .bucket_array_var()
-                    .load(Acquire, self.guard)
-                    .as_ref()?;
+                let current_array = self.hashindex.bucket_array(self.guard)?;
                 if self
                     .bucket_array
                     .as_ref()

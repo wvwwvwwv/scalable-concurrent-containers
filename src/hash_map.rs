@@ -7,7 +7,7 @@ use std::mem::replace;
 use std::ops::{Deref, DerefMut, RangeInclusive};
 use std::pin::pin;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::Relaxed;
 
 use sdd::{AtomicShared, Guard, Shared, Tag};
 
@@ -2441,7 +2441,7 @@ where
         debug_assert!(result >= self.additional);
 
         let guard = Guard::new();
-        if let Some(current_array) = self.hashmap.bucket_array.load(Acquire, &guard).as_ref() {
+        if let Some(current_array) = self.hashmap.bucket_array(&guard) {
             self.try_shrink_or_rebuild(current_array, 0, &guard);
         }
     }

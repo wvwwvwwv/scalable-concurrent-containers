@@ -1379,11 +1379,7 @@ where
         guard: &Guard,
     ) {
         let current_array_ptr = self.bucket_array_var().load(Acquire, guard);
-        if current_array_ptr.tag() != Tag::None {
-            // Another thread is currently allocating a new bucket array.
-            return;
-        }
-        let Some(current_array) = current_array_ptr.as_ref() else {
+        let Some(current_array) = (unsafe { current_array_ptr.as_ref_unchecked() }) else {
             // The hash table is empty.
             return;
         };
