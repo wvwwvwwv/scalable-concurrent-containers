@@ -8,17 +8,20 @@ use std::ops::{Deref, RangeInclusive};
 use std::panic::UnwindSafe;
 use std::pin::pin;
 use std::ptr;
+use std::sync::atomic::AtomicU8;
+#[cfg(not(feature = "loom"))]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicU8, AtomicUsize};
 
-use sdd::{AtomicShared, Epoch, Guard, Ptr, Shared, Tag};
+#[cfg(feature = "loom")]
+use loom::sync::atomic::AtomicUsize;
+use sdd::{AtomicShared, Epoch, Guard, Shared, Tag};
 
 use super::Equivalent;
-use super::hash_table::HashTable;
+use super::async_helper::{AsyncGuard, fake_guard};
 use super::hash_table::bucket::{Bucket, EntryPtr, INDEX};
 use super::hash_table::bucket_array::BucketArray;
-use crate::async_helper::AsyncGuard;
-use crate::hash_table::LockedBucket;
+use super::hash_table::{HashTable, LockedBucket};
 
 /// Scalable concurrent hash index.
 ///
@@ -264,12 +267,11 @@ where
     /// ```
     #[inline]
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
+        self.reclaim_memory();
         let hash = self.hash(&key);
-        let async_guard = pin!(AsyncGuard::default());
-        self.reclaim_memory(async_guard.guard());
-        let locked_bucket = self.writer_async(hash, &async_guard).await;
-        let prolonged_guard = self.prolonged_guard_ref(async_guard.guard());
-        let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
+        let locked_bucket = self.writer_async(hash).await;
+        let fake_guard = fake_guard();
+        let entry_ptr = locked_bucket.search(&key, hash, fake_guard);
         if entry_ptr.is_valid() {
             Entry::Occupied(OccupiedEntry {
                 hashindex: self,
@@ -346,9 +348,9 @@ where
     /// ```
     #[inline]
     pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {
+        self.reclaim_memory();
         let hash = self.hash(&key);
         let guard = Guard::new();
-        self.reclaim_memory(&guard);
         let prolonged_guard = self.prolonged_guard_ref(&guard);
         let locked_bucket = self.try_reserve_bucket(hash, prolonged_guard)?;
         let entry_ptr = locked_bucket.search(&key, hash, prolonged_guard);
@@ -430,13 +432,12 @@ where
         &self,
         mut pred: P,
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
-        let async_guard = pin!(AsyncGuard::default());
-        self.reclaim_memory(async_guard.guard());
+        self.reclaim_memory();
         let mut entry = None;
-        self.for_each_writer_async(0, 0, &async_guard, |locked_bucket, _| {
-            let guard = self.prolonged_guard_ref(async_guard.guard());
-            let mut entry_ptr = EntryPtr::new(guard);
-            while entry_ptr.move_to_next(&locked_bucket.writer, guard) {
+        self.for_each_writer_async(0, 0, |locked_bucket, _| {
+            let fake_guard = fake_guard();
+            let mut entry_ptr = EntryPtr::new(fake_guard);
+            while entry_ptr.move_to_next(&locked_bucket.writer, fake_guard) {
                 let (k, v) = locked_bucket.entry(&entry_ptr);
                 if pred(k, v) {
                     entry = Some(OccupiedEntry {
@@ -473,9 +474,9 @@ where
         &self,
         mut pred: P,
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
+        self.reclaim_memory();
         let mut entry = None;
         let guard = Guard::new();
-        self.reclaim_memory(&guard);
         let prolonged_guard = self.prolonged_guard_ref(&guard);
         self.for_each_writer_sync(0, 0, prolonged_guard, |locked_bucket, _| {
             let mut entry_ptr = EntryPtr::new(prolonged_guard);
@@ -515,10 +516,10 @@ where
     /// ```
     #[inline]
     pub async fn insert_async(&self, key: K, val: V) -> Result<(), (K, V)> {
+        self.reclaim_memory();
         let hash = self.hash(&key);
         let async_guard = pin!(AsyncGuard::default());
-        self.reclaim_memory(async_guard.guard());
-        let locked_bucket = self.writer_async(hash, &async_guard).await;
+        let locked_bucket = self.writer_async(hash).await;
         let guard = async_guard.guard();
         if locked_bucket.search(&key, hash, guard).is_valid() {
             Err((key, val))
@@ -550,9 +551,9 @@ where
     /// ```
     #[inline]
     pub fn insert_sync(&self, key: K, val: V) -> Result<(), (K, V)> {
+        self.reclaim_memory();
         let hash = self.hash(&key);
         let guard = Guard::new();
-        self.reclaim_memory(&guard);
         let locked_bucket = self.writer_sync(hash, &guard);
         if locked_bucket.search(&key, hash, &guard).is_valid() {
             Err((key, val))
@@ -633,15 +634,15 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        self.reclaim_memory();
         let hash = self.hash(key);
-        let async_guard = pin!(AsyncGuard::default());
-        self.reclaim_memory(async_guard.guard());
-        let Some(mut locked_bucket) = self.optional_writer_async(hash, &async_guard).await else {
+        let Some(mut locked_bucket) = self.optional_writer_async(hash).await else {
             return false;
         };
-        let mut entry_ptr = locked_bucket.search(key, hash, async_guard.guard());
+        let fake_guard = fake_guard();
+        let mut entry_ptr = locked_bucket.search(key, hash, fake_guard);
         if entry_ptr.is_valid() && condition(&mut locked_bucket.entry_mut(&mut entry_ptr).1) {
-            locked_bucket.mark_removed(self, &mut entry_ptr, async_guard.guard());
+            locked_bucket.mark_removed(self, &mut entry_ptr, &Guard::new());
             true
         } else {
             false
@@ -671,9 +672,9 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        self.reclaim_memory();
         let hash = self.hash(key);
         let guard = Guard::default();
-        self.reclaim_memory(&guard);
         let Some(mut locked_bucket) = self.optional_writer_sync(hash, &guard) else {
             return false;
         };
@@ -707,12 +708,11 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        self.reclaim_memory();
         let hash = self.hash(key);
-        let async_guard = pin!(AsyncGuard::default());
-        self.reclaim_memory(async_guard.guard());
-        let locked_bucket = self.optional_writer_async(hash, &async_guard).await?;
-        let guard = self.prolonged_guard_ref(async_guard.guard());
-        let entry_ptr = locked_bucket.search(key, hash, guard);
+        let locked_bucket = self.optional_writer_async(hash).await?;
+        let fake_guard = fake_guard();
+        let entry_ptr = locked_bucket.search(key, hash, fake_guard);
         if entry_ptr.is_valid() {
             return Some(OccupiedEntry {
                 hashindex: self,
@@ -747,9 +747,9 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        self.reclaim_memory();
         let hash = self.hash(key);
         let guard = Guard::new();
-        self.reclaim_memory(&guard);
         let prolonged_guard = self.prolonged_guard_ref(&guard);
         let locked_bucket = self.optional_writer_sync(hash, prolonged_guard)?;
         let entry_ptr = locked_bucket.search(key, hash, prolonged_guard);
@@ -797,7 +797,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.reclaim_memory(guard);
+        self.reclaim_memory();
         self.peek_entry(key, self.hash(key), guard).map(|(_, v)| v)
     }
 
@@ -833,8 +833,8 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        self.reclaim_memory();
         let guard = Guard::new();
-        self.reclaim_memory(&guard);
         self.peek_entry(key, self.hash(key), &guard)
             .map(|(k, v)| reader(k, v))
     }
@@ -882,13 +882,12 @@ where
     /// ```
     #[inline]
     pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
-        let async_guard = pin!(AsyncGuard::default());
-        self.reclaim_memory(async_guard.guard());
+        self.reclaim_memory();
         let mut result = true;
-        self.for_each_reader_async(&async_guard, |reader, data_block| {
-            let guard = async_guard.guard();
-            let mut entry_ptr = EntryPtr::new(guard);
-            while entry_ptr.move_to_next(&reader, guard) {
+        self.for_each_reader_async(|reader, data_block| {
+            let fake_guard = fake_guard();
+            let mut entry_ptr = EntryPtr::new(fake_guard);
+            while entry_ptr.move_to_next(&reader, fake_guard) {
                 let (k, v) = entry_ptr.get(data_block);
                 if !f(k, v) {
                     result = false;
@@ -927,9 +926,9 @@ where
     /// ```
     #[inline]
     pub fn iter_sync<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+        self.reclaim_memory();
         let mut result = true;
         let guard = Guard::new();
-        self.reclaim_memory(&guard);
         self.for_each_reader_sync(&guard, |reader, data_block| {
             let mut entry_ptr = EntryPtr::new(&guard);
             while entry_ptr.move_to_next(&reader, &guard) {
@@ -962,15 +961,16 @@ where
     /// ```
     #[inline]
     pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
-        let async_guard = pin!(AsyncGuard::default());
-        self.reclaim_memory(async_guard.guard());
-        self.for_each_writer_async(0, 0, &async_guard, |mut locked_bucket, removed| {
-            let guard = async_guard.guard();
-            let mut entry_ptr = EntryPtr::new(guard);
-            while entry_ptr.move_to_next(&locked_bucket.writer, guard) {
+        self.reclaim_memory();
+        self.for_each_writer_async(0, 0, |mut locked_bucket, removed| {
+            let fake_guard = fake_guard();
+            let mut entry_ptr = EntryPtr::new(fake_guard);
+            while entry_ptr.move_to_next(&locked_bucket.writer, fake_guard) {
                 let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
                 if !pred(k, v) {
-                    locked_bucket.writer.mark_removed(&mut entry_ptr, guard);
+                    locked_bucket
+                        .writer
+                        .mark_removed(&mut entry_ptr, fake_guard);
                     *removed = true;
                 }
             }
@@ -1004,8 +1004,8 @@ where
     /// ```
     #[inline]
     pub fn retain_sync<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
+        self.reclaim_memory();
         let guard = Guard::new();
-        self.reclaim_memory(&guard);
         self.for_each_writer_sync(0, 0, &guard, |mut locked_bucket, removed| {
             let mut entry_ptr = EntryPtr::new(&guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, &guard) {
@@ -1122,10 +1122,10 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert_eq!(hashindex.capacity_range(), 0..=(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashindex.capacity_range(), 0..=(1_usize << (usize::BITS - 2)));
     ///
     /// let reserved = hashindex.reserve(1000);
-    /// assert_eq!(hashindex.capacity_range(), 1000..=(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashindex.capacity_range(), 1000..=(1_usize << (usize::BITS - 2)));
     /// ```
     #[inline]
     pub fn capacity_range(&self) -> RangeInclusive<usize> {
@@ -1196,24 +1196,32 @@ where
 
     /// Reclaims memory by dropping all garbage bucket arrays if they are unreachable.
     #[inline]
-    fn reclaim_memory(&self, guard: &Guard) {
-        let head_ptr = self.garbage_chain.load(Acquire, guard);
+    fn reclaim_memory(&self) {
+        let head_ptr = self.garbage_chain.load(Acquire, fake_guard());
         if !head_ptr.is_null() {
-            self.dealloc_garbage(head_ptr, guard);
+            self.dealloc_garbage();
         }
     }
 
     /// Deallocates the supplied bucket array.
-    fn dealloc_garbage(&self, ptr: Ptr<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
+    fn dealloc_garbage(&self) {
+        let guard = Guard::new();
+        let head_ptr = self.garbage_chain.load(Acquire, &guard);
+        if head_ptr.is_null() {
+            return;
+        }
         let garbage_epoch = self.garbage_epoch.load(Acquire);
         if Epoch::try_from(garbage_epoch).is_ok_and(|e| !e.in_same_generation(guard.epoch())) {
-            if let Ok((mut garbage_head, _)) =
-                self.garbage_chain
-                    .compare_exchange(ptr, (None, Tag::None), Acquire, Relaxed, guard)
-            {
+            if let Ok((mut garbage_head, _)) = self.garbage_chain.compare_exchange(
+                head_ptr,
+                (None, Tag::None),
+                Acquire,
+                Relaxed,
+                &guard,
+            ) {
                 while let Some(garbage_bucket_array) = garbage_head {
                     garbage_head = garbage_bucket_array
-                        .bucket_link()
+                        .linked_array_var()
                         .swap((None, Tag::None), Acquire)
                         .0;
                     let dropped = unsafe { garbage_bucket_array.drop_in_place() };
@@ -1250,8 +1258,8 @@ where
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.reclaim_memory();
         let guard = Guard::new();
-        self.reclaim_memory(&guard);
         f.debug_map().entries(self.iter(&guard)).finish()
     }
 }
@@ -1341,7 +1349,7 @@ where
         let mut garbage_head = self.garbage_chain.swap((None, Tag::None), Acquire).0;
         while let Some(garbage_bucket_array) = garbage_head {
             garbage_head = garbage_bucket_array
-                .bucket_link()
+                .linked_array_var()
                 .swap((None, Tag::None), Acquire)
                 .0;
             let dropped = unsafe { garbage_bucket_array.drop_in_place() };
@@ -1381,7 +1389,7 @@ where
 
     #[inline]
     fn defer_reclaim(&self, bucket_array: Shared<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
-        self.reclaim_memory(guard);
+        self.reclaim_memory();
         self.garbage_epoch.swap(u8::from(guard.epoch()), Release);
         let (Some(prev_head), _) = self
             .garbage_chain
@@ -1391,17 +1399,17 @@ where
         };
         // The bucket array will be dropped when the epoch enters the next generation.
         bucket_array
-            .bucket_link()
+            .linked_array_var()
             .swap((Some(prev_head), Tag::None), Release);
     }
 
     #[inline]
-    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), INDEX>> {
+    fn bucket_array_var(&self) -> &AtomicShared<BucketArray<K, V, (), INDEX>> {
         &self.bucket_array
     }
 
     #[inline]
-    fn minimum_capacity(&self) -> &AtomicUsize {
+    fn minimum_capacity_var(&self) -> &AtomicUsize {
         &self.minimum_capacity
     }
 }
@@ -1414,8 +1422,8 @@ where
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
+        self.reclaim_memory();
         let guard = Guard::new();
-        self.reclaim_memory(&guard);
         if !self
             .iter(&guard)
             .any(|(k, v)| other.peek_with(k, |_, ov| v == ov) != Some(true))
@@ -1723,14 +1731,12 @@ where
     pub async fn remove_and_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let hashindex = self.hashindex;
         let mut entry_ptr = self.entry_ptr.clone();
-        let mut async_guard = pin!(AsyncGuard::default());
-        self.locked_bucket.writer.mark_removed(
-            &mut entry_ptr,
-            hashindex.prolonged_guard_ref(async_guard.guard()),
-        );
+        self.locked_bucket
+            .writer
+            .mark_removed(&mut entry_ptr, hashindex.prolonged_guard_ref(&Guard::new()));
         if let Some(locked_bucket) = self
             .locked_bucket
-            .next_async(hashindex, &mut entry_ptr, &mut async_guard)
+            .next_async(hashindex, &mut entry_ptr)
             .await
         {
             return Some(OccupiedEntry {
@@ -1816,10 +1822,9 @@ where
     pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let hashindex = self.hashindex;
         let mut entry_ptr = self.entry_ptr.clone();
-        let mut async_guard = pin!(AsyncGuard::default());
         if let Some(locked_bucket) = self
             .locked_bucket
-            .next_async(hashindex, &mut entry_ptr, &mut async_guard)
+            .next_async(hashindex, &mut entry_ptr)
             .await
         {
             return Some(OccupiedEntry {
@@ -2090,7 +2095,7 @@ where
         debug_assert!(result >= self.additional);
 
         let guard = Guard::new();
-        if let Some(current_array) = self.hashindex.bucket_array.load(Acquire, &guard).as_ref() {
+        if let Some(current_array) = self.hashindex.bucket_array(&guard) {
             self.try_shrink_or_rebuild(current_array, 0, &guard);
         }
     }
@@ -2123,13 +2128,8 @@ where
             array
         } else {
             // Start scanning.
-            let current_array = self
-                .hashindex
-                .bucket_array()
-                .load(Acquire, self.guard)
-                .as_ref()?;
-            let old_array_ptr = current_array.old_array(self.guard);
-            let array = if let Some(old_array) = old_array_ptr.as_ref() {
+            let current_array = self.hashindex.bucket_array(self.guard)?;
+            let array = if let Some(old_array) = current_array.linked_array(self.guard) {
                 old_array
             } else {
                 current_array
@@ -2154,11 +2154,7 @@ where
             if self.index + 1 == array.len() {
                 // Move to a newer bucket array.
                 self.index = 0;
-                let current_array = self
-                    .hashindex
-                    .bucket_array()
-                    .load(Acquire, self.guard)
-                    .as_ref()?;
+                let current_array = self.hashindex.bucket_array(self.guard)?;
                 if self
                     .bucket_array
                     .as_ref()
@@ -2168,7 +2164,7 @@ where
                     break;
                 }
 
-                array = if let Some(old_array) = current_array.old_array(self.guard).as_ref() {
+                array = if let Some(old_array) = current_array.linked_array(self.guard) {
                     if self
                         .bucket_array
                         .as_ref()

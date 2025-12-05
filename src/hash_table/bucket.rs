@@ -201,7 +201,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         self.len.store(self.len.load(Relaxed) - 1, Relaxed);
 
-        if let Some(link) = entry_ptr.current_link_ptr.as_ref() {
+        if let Some(link) = link_ref(entry_ptr.current_link_ptr) {
             let mut occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
             debug_assert_ne!(occupied_bitmap & (1_u32 << entry_ptr.current_index), 0);
 
@@ -243,7 +243,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         self.len.store(self.len.load(Relaxed) - 1, Relaxed);
 
-        if let Some(link) = entry_ptr.current_link_ptr.as_ref() {
+        if let Some(link) = link_ref(entry_ptr.current_link_ptr) {
             let mut removed_bitmap = link.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
             debug_assert_eq!(removed_bitmap & (1_u32 << entry_ptr.current_index), 0);
 
@@ -327,7 +327,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             BUCKET_LEN - self.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
         if capacity < additional {
             let mut link_ptr = self.metadata.link.load(Acquire, guard);
-            while let Some(link) = link_ptr.as_ref() {
+            while let Some(link) = link_ref(link_ptr) {
                 capacity += LINKED_BUCKET_LEN
                     - link.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
                 if capacity >= additional {
@@ -362,7 +362,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     ) {
         debug_assert!(self.rw_lock.is_locked(Relaxed));
 
-        let entry = if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
+        let entry = if let Some(link) = link_ref(from_entry_ptr.current_link_ptr) {
             Self::read_data_block(&link.data_block, from_entry_ptr.current_index)
         } else {
             Self::read_data_block(
@@ -373,7 +373,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         self.insert(data_block, hash, entry, guard);
 
         let mo = if TYPE == INDEX { Release } else { Relaxed };
-        if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
+        if let Some(link) = link_ref(from_entry_ptr.current_link_ptr) {
             let occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
             debug_assert_ne!(occupied_bitmap & (1_u32 << from_entry_ptr.current_index), 0);
 
@@ -444,7 +444,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         guard: &'g Guard,
     ) -> EntryPtr<'g, K, V, TYPE> {
         let mut link_ptr = self.metadata.link.load(Acquire, guard);
-        while let Some(link) = link_ptr.as_ref() {
+        while let Some(link) = link_ref(link_ptr) {
             let occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
             let free_index = occupied_bitmap.trailing_ones() as usize;
             if free_index != LINKED_BUCKET_LEN {
@@ -476,7 +476,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             *h = Self::partial_hash(hash);
         });
         link.metadata.occupied_bitmap.store(1, Relaxed);
-        if let Some(head) = link.metadata.link.load(Relaxed, guard).as_ref() {
+        if let Some(head) = link_ref(link.metadata.link.load(Relaxed, guard)) {
             head.prev_link.store(link.as_ptr().cast_mut(), Relaxed);
         }
         let link_ptr = link.get_guarded_ptr(guard);
@@ -499,7 +499,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let mut empty =
             Self::cleanup_removed_entries(&self.metadata, unsafe { data_block.as_ref() });
         let mut link_ptr = self.metadata.link.load(Acquire, guard);
-        while let Some(link) = link_ptr.as_ref() {
+        while let Some(link) = link_ref(link_ptr) {
             empty &= Self::cleanup_removed_entries(&link.metadata, &link.data_block);
             let next_link_ptr = link.metadata.link.load(Acquire, guard);
             if next_link_ptr.is_null() {
@@ -705,7 +705,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             }
 
             let mut link_ptr = self.metadata.link.load(Acquire, guard);
-            while let Some(link) = link_ptr.as_ref() {
+            while let Some(link) = link_ref(link_ptr) {
                 if let Some((entry, _)) =
                     Self::search_data_block(&link.metadata, &link.data_block, key, hash)
                 {
@@ -743,7 +743,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             }
 
             let mut current_link_ptr = self.metadata.link.load(Acquire, guard);
-            while let Some(link) = current_link_ptr.as_ref() {
+            while let Some(link) = link_ref(current_link_ptr) {
                 if let Some((_, index)) =
                     Self::search_data_block(&link.metadata, &link.data_block, key, hash)
                 {
@@ -1015,7 +1015,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
             {
                 return true;
             }
-            while let Some(link) = self.current_link_ptr.as_ref() {
+            while let Some(link) = link_ref(self.current_link_ptr) {
                 if self.next_entry::<L, LINKED_BUCKET_LEN>(&link.metadata, guard) {
                     return true;
                 }
@@ -1035,7 +1035,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     pub(crate) fn get(&self, data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>) -> &'g (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
 
-        let entry_ptr = if let Some(link) = self.current_link_ptr.as_ref() {
+        let entry_ptr = if let Some(link) = link_ref(self.current_link_ptr) {
             Bucket::<K, V, (), TYPE>::entry_ptr(&link.data_block, self.current_index)
         } else {
             Bucket::<K, V, (), TYPE>::entry_ptr(unsafe { data_block.as_ref() }, self.current_index)
@@ -1054,7 +1054,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     ) -> &mut (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
 
-        let entry_ptr = if let Some(link) = self.current_link_ptr.as_ref() {
+        let entry_ptr = if let Some(link) = link_ref(self.current_link_ptr) {
             Bucket::<K, V, L, TYPE>::entry_mut_ptr(&link.data_block, self.current_index)
         } else {
             Bucket::<K, V, L, TYPE>::entry_mut_ptr(
@@ -1072,7 +1072,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     pub(crate) fn partial_hash<L: LruList>(&self, bucket: &Bucket<K, V, L, TYPE>) -> u8 {
         debug_assert_ne!(self.current_index, usize::MAX);
 
-        if let Some(link) = self.current_link_ptr.as_ref() {
+        if let Some(link) = link_ref(self.current_link_ptr) {
             *Bucket::<K, V, L, TYPE>::read_cell(
                 &link.metadata.partial_hash_array[self.current_index],
             )
@@ -1377,6 +1377,11 @@ impl<K, V> Drop for LinkedBucket<K, V> {
             }
         }
     }
+}
+
+/// Returns a reference to the linked bucket that the pointer might point to.
+fn link_ref<K, V>(ptr: Ptr<'_, LinkedBucket<K, V>>) -> Option<&LinkedBucket<K, V>> {
+    unsafe { ptr.as_ref_unchecked() }
 }
 
 #[cfg(not(feature = "loom"))]

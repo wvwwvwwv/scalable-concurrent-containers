@@ -5,7 +5,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-use sdd::{AtomicShared, Guard, Ptr, Tag};
+use sdd::{AtomicShared, Guard, Tag};
 
 use super::bucket::{BUCKET_LEN, Bucket, DataBlock, INDEX, LruList};
 use crate::exit_guard::ExitGuard;
@@ -18,7 +18,7 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
     hash_offset: u8,
     sample_size: u8,
     bucket_ptr_offset: u16,
-    old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
+    linked_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
     num_cleared_buckets: AtomicUsize,
 }
 
@@ -28,7 +28,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// `capacity` is the desired number of entries, not the length of the bucket array.
     pub(crate) fn new(
         capacity: usize,
-        old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
+        linked_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
     ) -> Self {
         let adjusted_capacity = capacity
             .min(1_usize << (usize::BITS - 1))
@@ -90,7 +90,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 hash_offset: u8::try_from(u64::BITS).unwrap_or(64) - log2_array_len,
                 sample_size,
                 bucket_ptr_offset: bucket_array_ptr_offset,
-                old_array,
+                linked_array,
                 num_cleared_buckets: AtomicUsize::new(0),
             }
         }
@@ -111,7 +111,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Calculates the [`Bucket`] index for the hash value.
     #[allow(clippy::cast_possible_truncation)] // Intended truncation.
     #[inline]
-    pub(crate) const fn calculate_bucket_index(&self, hash: u64) -> usize {
+    pub(crate) const fn bucket_index(&self, hash: u64) -> usize {
         // Take the upper n-bits to make sure that a single bucket is spread across a few adjacent
         // buckets when the hash table is resized.
         (hash >> self.hash_offset) as usize
@@ -157,22 +157,25 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         unsafe { self.data_blocks.add(index) }
     }
 
-    /// Returns a reference to the old array pointer.
+    /// Returns `true` if an linked bucket array exists.
     #[inline]
-    pub(crate) const fn bucket_link(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>> {
-        &self.old_array
+    pub(crate) fn has_linked_array(&self) -> bool {
+        !self.linked_array.is_null(Acquire)
     }
 
-    /// Returns `true` if the old array exists.
+    /// Returns a reference to the linked bucket array pointer.
     #[inline]
-    pub(crate) fn has_old_array(&self) -> bool {
-        !self.old_array.is_null(Acquire)
+    pub(crate) const fn linked_array_var(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>> {
+        &self.linked_array
     }
 
-    /// Returns a [`Ptr`] to the old array.
+    /// Returns a reference to the linked bucket array.
     #[inline]
-    pub(crate) fn old_array<'g>(&self, guard: &'g Guard) -> Ptr<'g, BucketArray<K, V, L, TYPE>> {
-        self.old_array.load(Acquire, guard)
+    pub(crate) fn linked_array<'g>(
+        &self,
+        guard: &'g Guard,
+    ) -> Option<&'g BucketArray<K, V, L, TYPE>> {
+        unsafe { self.linked_array.load(Acquire, guard).as_ref_unchecked() }
     }
 
     /// Calculates the layout of the memory block for an array of `T`.
@@ -187,9 +190,9 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 
 impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
     fn drop(&mut self) {
-        if !self.old_array.is_null(Relaxed) {
+        if !self.linked_array.is_null(Relaxed) {
             unsafe {
-                self.old_array
+                self.linked_array
                     .swap((None, Tag::None), Relaxed)
                     .0
                     .map(|a| a.drop_in_place());

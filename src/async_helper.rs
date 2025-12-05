@@ -30,6 +30,12 @@ pub(crate) trait TryWait {
     fn try_wait(&mut self, lock: &Lock);
 }
 
+/// Returns a fake [`Guard`] reference for methods that require a [`Guard`] to check the lifetime.
+#[inline]
+pub(super) const fn fake_guard() -> &'static Guard {
+    unsafe { &*ptr::from_ref(&FAKE_GUARD_GLOBAL).cast::<Guard>() }
+}
+
 impl AsyncGuard {
     /// Returns `true` if the [`AsyncGuard`] contains a valid [`Guard`].
     #[inline]
@@ -56,18 +62,21 @@ impl AsyncGuard {
         }
     }
 
-    /// Loads the content of the [`AtomicShared`] without exposing the [`Guard`].
+    /// Loads the content of the [`AtomicShared`] without exposing the [`Guard`] or checking tag
+    /// bits.
     #[inline]
-    pub(crate) fn load<T>(&self, atomic_ptr: &AtomicShared<T>, mo: Ordering) -> Option<&T> {
-        atomic_ptr.load(mo, self.guard()).as_ref()
+    pub(crate) fn load_unchecked<T>(
+        &self,
+        atomic_ptr: &AtomicShared<T>,
+        mo: Ordering,
+    ) -> Option<&T> {
+        unsafe { atomic_ptr.load(mo, self.guard()).as_ref_unchecked() }
     }
 
     /// Checks if the reference is valid.
     #[inline]
     pub(crate) fn check_ref<T>(&self, atomic_ptr: &AtomicShared<T>, r: &T, mo: Ordering) -> bool {
-        atomic_ptr
-            .load(mo, self.guard())
-            .as_ref()
+        self.load_unchecked(atomic_ptr, mo)
             .is_some_and(|s| ptr::eq(s, r))
     }
 }
@@ -120,3 +129,5 @@ impl TryWait for () {
         let _: Result<_, _> = pinned_pager.poll_sync();
     }
 }
+
+static FAKE_GUARD_GLOBAL: usize = 0;

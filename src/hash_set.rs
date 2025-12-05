@@ -7,14 +7,13 @@ use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::swap;
 use std::ops::{Deref, RangeInclusive};
-use std::pin::pin;
 
 use sdd::Guard;
 
+use super::async_helper::fake_guard;
+use super::hash_map;
 use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
-use crate::async_helper::AsyncGuard;
-use crate::hash_map;
 
 /// Scalable concurrent hash set.
 ///
@@ -220,16 +219,15 @@ where
     #[inline]
     pub async fn replace_async(&self, mut key: K) -> Option<K> {
         let hash = self.map.hash(&key);
-        let async_guard = pin!(AsyncGuard::default());
-        let mut locked_bucket = self.map.writer_async(hash, &async_guard).await;
-        let guard = async_guard.guard();
-        let mut entry_ptr = locked_bucket.search(&key, hash, guard);
+        let mut locked_bucket = self.map.writer_async(hash).await;
+        let fake_guard = fake_guard();
+        let mut entry_ptr = locked_bucket.search(&key, hash, fake_guard);
         if entry_ptr.is_valid() {
             let k = &mut locked_bucket.entry_mut(&mut entry_ptr).0;
             swap(k, &mut key);
             Some(key)
         } else {
-            locked_bucket.insert(hash, (key, ()), guard);
+            locked_bucket.insert(hash, (key, ()), fake_guard);
             None
         }
     }
@@ -744,10 +742,10 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert_eq!(hashset.capacity_range(), 0..=(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashset.capacity_range(), 0..=(1_usize << (usize::BITS - 2)));
     ///
     /// let reserved = hashset.reserve(1000);
-    /// assert_eq!(hashset.capacity_range(), 1000..=(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashset.capacity_range(), 1000..=(1_usize << (usize::BITS - 2)));
     /// ```
     #[inline]
     pub fn capacity_range(&self) -> RangeInclusive<usize> {
