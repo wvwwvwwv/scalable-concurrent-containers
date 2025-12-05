@@ -14,7 +14,7 @@ use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Guard, Shared, Tag};
 
 use super::Equivalent;
-use super::async_helper::FakeGuard;
+use super::async_helper::fake_guard;
 use super::hash_table::MAXIMUM_CAPACITY_LIMIT;
 use super::hash_table::bucket::{CACHE, DoublyLinkedList, EntryPtr};
 use super::hash_table::bucket_array::BucketArray;
@@ -223,7 +223,7 @@ where
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
         let locked_bucket = self.writer_async(hash).await;
-        let fake_guard = self.prolonged_guard_ref(FakeGuard.as_ref());
+        let fake_guard = fake_guard();
         let entry_ptr = locked_bucket.search(&key, hash, fake_guard);
         if entry_ptr.is_valid() {
             Entry::Occupied(OccupiedEntry {
@@ -344,7 +344,7 @@ where
     pub async fn put_async(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
         let hash = self.hash(&key);
         let locked_bucket = self.writer_async(hash).await;
-        let fake_guard = FakeGuard.as_ref();
+        let fake_guard = fake_guard();
         if locked_bucket.search(&key, hash, fake_guard).is_valid() {
             Err((key, val))
         } else {
@@ -443,7 +443,7 @@ where
     pub async fn replace_async(&self, key: K) -> ReplaceResult<'_, K, V, H> {
         let hash = self.hash(&key);
         let locked_bucket = self.writer_async(hash).await;
-        let fake_guard = self.prolonged_guard_ref(FakeGuard.as_ref());
+        let fake_guard = fake_guard();
         let mut entry_ptr = locked_bucket.search(&key, hash, fake_guard);
         if entry_ptr.is_valid() {
             let prev_key = replace(
@@ -611,7 +611,7 @@ where
     {
         let hash = self.hash(key);
         let locked_bucket = self.optional_writer_async(hash).await?;
-        let fake_guard = self.prolonged_guard_ref(FakeGuard.as_ref());
+        let fake_guard = fake_guard();
         let entry_ptr = locked_bucket.search(key, hash, fake_guard);
         if entry_ptr.is_valid() {
             locked_bucket.writer.update_lru_tail(&entry_ptr);
@@ -778,7 +778,7 @@ where
     {
         let hash = self.hash(key);
         let mut locked_bucket = self.optional_writer_async(hash).await?;
-        let fake_guard = FakeGuard.as_ref();
+        let fake_guard = fake_guard();
         let mut entry_ptr = locked_bucket.search(key, hash, fake_guard);
         if entry_ptr.is_valid() && condition(&mut locked_bucket.entry_mut(&mut entry_ptr).1) {
             Some(locked_bucket.remove(self, &mut entry_ptr, &Guard::new()))
@@ -846,7 +846,7 @@ where
     pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         self.for_each_reader_async(|reader, data_block| {
-            let fake_guard = FakeGuard.as_ref();
+            let fake_guard = fake_guard();
             let mut entry_ptr = EntryPtr::new(fake_guard);
             while entry_ptr.move_to_next(&reader, fake_guard) {
                 let (k, v) = entry_ptr.get(data_block);
@@ -937,7 +937,7 @@ where
     ) -> bool {
         let mut result = true;
         self.for_each_writer_async(0, 0, |mut locked_bucket, removed| {
-            let fake_guard = FakeGuard.as_ref();
+            let fake_guard = fake_guard();
             let mut entry_ptr = EntryPtr::new(fake_guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, fake_guard) {
                 let consumable_entry = ConsumableEntry {

@@ -17,10 +17,8 @@ use bucket_array::BucketArray;
 use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
-use crate::async_helper::FakeGuard;
-
 use super::Equivalent;
-use super::async_helper::AsyncGuard;
+use super::async_helper::{AsyncGuard, fake_guard};
 use super::exit_guard::ExitGuard;
 use super::hash_table::bucket::Bucket;
 
@@ -1678,7 +1676,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
     where
         H: BuildHasher,
     {
-        if entry_ptr.move_to_next(&self.writer, FakeGuard.as_ref()) {
+        if entry_ptr.move_to_next(&self.writer, fake_guard()) {
             return Some(self);
         }
 
@@ -1698,7 +1696,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         let mut next_entry = None;
         hash_table
             .for_each_writer_async(next_index, len, |locked_bucket, _| {
-                let fake_guard = hash_table.prolonged_guard_ref(FakeGuard.as_ref());
+                let fake_guard = fake_guard();
                 *entry_ptr = EntryPtr::new(fake_guard);
                 if entry_ptr.move_to_next(&locked_bucket.writer, fake_guard) {
                     next_entry = Some(locked_bucket);

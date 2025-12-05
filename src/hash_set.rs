@@ -10,7 +10,7 @@ use std::ops::{Deref, RangeInclusive};
 
 use sdd::Guard;
 
-use super::async_helper::FakeGuard;
+use super::async_helper::fake_guard;
 use super::hash_map;
 use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
@@ -220,7 +220,7 @@ where
     pub async fn replace_async(&self, mut key: K) -> Option<K> {
         let hash = self.map.hash(&key);
         let mut locked_bucket = self.map.writer_async(hash).await;
-        let fake_guard = FakeGuard.as_ref();
+        let fake_guard = fake_guard();
         let mut entry_ptr = locked_bucket.search(&key, hash, fake_guard);
         if entry_ptr.is_valid() {
             let k = &mut locked_bucket.entry_mut(&mut entry_ptr).0;

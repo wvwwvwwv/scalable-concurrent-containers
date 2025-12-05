@@ -1,6 +1,6 @@
 use std::cell::UnsafeCell;
 use std::pin::{Pin, pin};
-use std::ptr::{self, NonNull};
+use std::ptr;
 use std::sync::atomic::Ordering;
 
 use saa::lock::Mode;
@@ -30,9 +30,11 @@ pub(crate) trait TryWait {
     fn try_wait(&mut self, lock: &Lock);
 }
 
-/// A zero-sized type to pass references to methods that require a [`Guard`] just to match the lifetime.
-#[derive(Debug, Default)]
-pub struct FakeGuard;
+/// Returns a fake [`Guard`] reference for methods that require a [`Guard`] to check the lifetime.
+#[inline]
+pub(super) const fn fake_guard() -> &'static Guard {
+    unsafe { &*ptr::from_ref(&FAKE_GUARD_GLOBAL).cast::<Guard>() }
+}
 
 impl AsyncGuard {
     /// Returns `true` if the [`AsyncGuard`] contains a valid [`Guard`].
@@ -128,9 +130,4 @@ impl TryWait for () {
     }
 }
 
-impl AsRef<Guard> for FakeGuard {
-    #[inline]
-    fn as_ref(&self) -> &Guard {
-        unsafe { std::mem::transmute::<NonNull<Guard>, &Guard>(NonNull::dangling()) }
-    }
-}
+static FAKE_GUARD_GLOBAL: usize = 0;

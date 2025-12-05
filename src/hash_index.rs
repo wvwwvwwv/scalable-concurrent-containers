@@ -18,7 +18,7 @@ use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Epoch, Guard, Shared, Tag};
 
 use super::Equivalent;
-use super::async_helper::{AsyncGuard, FakeGuard};
+use super::async_helper::{AsyncGuard, fake_guard};
 use super::hash_table::bucket::{Bucket, EntryPtr, INDEX};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedBucket};
@@ -270,7 +270,7 @@ where
         self.reclaim_memory();
         let hash = self.hash(&key);
         let locked_bucket = self.writer_async(hash).await;
-        let fake_guard = self.prolonged_guard_ref(FakeGuard.as_ref());
+        let fake_guard = fake_guard();
         let entry_ptr = locked_bucket.search(&key, hash, fake_guard);
         if entry_ptr.is_valid() {
             Entry::Occupied(OccupiedEntry {
@@ -435,7 +435,7 @@ where
         self.reclaim_memory();
         let mut entry = None;
         self.for_each_writer_async(0, 0, |locked_bucket, _| {
-            let fake_guard = self.prolonged_guard_ref(FakeGuard.as_ref());
+            let fake_guard = fake_guard();
             let mut entry_ptr = EntryPtr::new(fake_guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, fake_guard) {
                 let (k, v) = locked_bucket.entry(&entry_ptr);
@@ -639,7 +639,7 @@ where
         let Some(mut locked_bucket) = self.optional_writer_async(hash).await else {
             return false;
         };
-        let fake_guard = FakeGuard.as_ref();
+        let fake_guard = fake_guard();
         let mut entry_ptr = locked_bucket.search(key, hash, fake_guard);
         if entry_ptr.is_valid() && condition(&mut locked_bucket.entry_mut(&mut entry_ptr).1) {
             locked_bucket.mark_removed(self, &mut entry_ptr, &Guard::new());
@@ -711,7 +711,7 @@ where
         self.reclaim_memory();
         let hash = self.hash(key);
         let locked_bucket = self.optional_writer_async(hash).await?;
-        let fake_guard = self.prolonged_guard_ref(FakeGuard.as_ref());
+        let fake_guard = fake_guard();
         let entry_ptr = locked_bucket.search(key, hash, fake_guard);
         if entry_ptr.is_valid() {
             return Some(OccupiedEntry {
@@ -885,7 +885,7 @@ where
         self.reclaim_memory();
         let mut result = true;
         self.for_each_reader_async(|reader, data_block| {
-            let fake_guard = FakeGuard.as_ref();
+            let fake_guard = fake_guard();
             let mut entry_ptr = EntryPtr::new(fake_guard);
             while entry_ptr.move_to_next(&reader, fake_guard) {
                 let (k, v) = entry_ptr.get(data_block);
@@ -963,7 +963,7 @@ where
     pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
         self.reclaim_memory();
         self.for_each_writer_async(0, 0, |mut locked_bucket, removed| {
-            let fake_guard = FakeGuard.as_ref();
+            let fake_guard = fake_guard();
             let mut entry_ptr = EntryPtr::new(fake_guard);
             while entry_ptr.move_to_next(&locked_bucket.writer, fake_guard) {
                 let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
@@ -1197,7 +1197,7 @@ where
     /// Reclaims memory by dropping all garbage bucket arrays if they are unreachable.
     #[inline]
     fn reclaim_memory(&self) {
-        let head_ptr = self.garbage_chain.load(Acquire, FakeGuard.as_ref());
+        let head_ptr = self.garbage_chain.load(Acquire, fake_guard());
         if !head_ptr.is_null() {
             self.dealloc_garbage();
         }
