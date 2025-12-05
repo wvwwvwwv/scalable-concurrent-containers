@@ -143,18 +143,52 @@ mod hashmap {
 
     #[test]
     fn future_size() {
-        let limit = 584;
-        let hashmap: HashMap<usize, usize> = HashMap::default();
-        let insert_size = size_of_val(&hashmap.insert_async(0, 0));
-        assert!(insert_size < limit, "{insert_size}");
-        let entry_size = size_of_val(&hashmap.entry_async(0));
-        assert!(entry_size < limit, "{entry_size}");
-        let read_size = size_of_val(&hashmap.read_async(&0, |_, _| {}));
-        assert!(read_size < limit, "{read_size}");
-        let remove_size = size_of_val(&hashmap.remove_async(&0));
-        assert!(remove_size < limit, "{remove_size}");
-        let iter_size = size_of_val(&hashmap.iter_async(|_, _| true));
-        assert!(iter_size < limit, "{iter_size}");
+        let base_size = 520; // In v2, 104.
+        // Small type.
+        {
+            let limit = base_size; // In v2, 104.
+            let hashmap: HashMap<(), ()> = HashMap::default();
+            let insert_size = size_of_val(&hashmap.insert_async((), ()));
+            assert!(insert_size <= limit, "{insert_size}");
+            let entry_size = size_of_val(&hashmap.entry_async(()));
+            assert!(entry_size <= limit + 8, "{entry_size}");
+            let read_size = size_of_val(&hashmap.read_async(&(), |(), ()| {}));
+            assert!(read_size <= limit + 16, "{read_size}");
+            let remove_size = size_of_val(&hashmap.remove_async(&()));
+            assert!(remove_size <= limit + 48, "{remove_size}");
+            let iter_size = size_of_val(&hashmap.iter_async(|(), ()| true));
+            assert!(iter_size <= limit + 40, "{iter_size}");
+        }
+        // Medium type.
+        {
+            let limit = base_size + 2 * size_of::<(u64, u64)>(); // In v2, 104 + 2 * size_of::<(u64, u64)>.
+            let hashmap: HashMap<u64, u64> = HashMap::default();
+            let insert_size = size_of_val(&hashmap.insert_async(0, 0));
+            assert!(insert_size <= limit, "{insert_size}");
+            let entry_size = size_of_val(&hashmap.entry_async(0));
+            assert!(entry_size <= limit, "{entry_size}");
+            let read_size = size_of_val(&hashmap.read_async(&0, |_, _| {}));
+            assert!(read_size <= limit, "{read_size}");
+            let remove_size = size_of_val(&hashmap.remove_async(&0));
+            assert!(remove_size <= limit + 16, "{remove_size}");
+            let iter_size = size_of_val(&hashmap.iter_async(|_, _| true));
+            assert!(iter_size <= limit + 8, "{iter_size}");
+        }
+        {
+            type Large = [u64; 32];
+            let limit = base_size + 2 * size_of::<(Vec<usize>, Large)>(); // In v2, 104 + 2 * size_of::<(Vec<usize>, Large)>.
+            let hashmap: HashMap<Vec<usize>, Large> = HashMap::default();
+            let insert_size = size_of_val(&hashmap.insert_async(vec![], [0; 32]));
+            assert!(insert_size <= limit, "{insert_size}");
+            let entry_size = size_of_val(&hashmap.entry_async(vec![]));
+            assert!(entry_size <= limit, "{entry_size}");
+            let read_size = size_of_val(&hashmap.read_async(&vec![], |_, _| {}));
+            assert!(read_size <= limit, "{read_size}");
+            let remove_size = size_of_val(&hashmap.remove_async(&vec![]));
+            assert!(remove_size <= limit, "{remove_size}");
+            let iter_size = size_of_val(&hashmap.iter_async(|_, _| true));
+            assert!(iter_size <= limit, "{iter_size}");
+        }
     }
 
     #[cfg_attr(miri, ignore)]

@@ -64,7 +64,7 @@ where
             self.bucket_array_var()
                 .load(Acquire, &Guard::new())
                 .as_ref_unchecked()
-                .map_or(0, |a| a.calculate_bucket_index(self.hash(key)))
+                .map_or(0, |a| a.bucket_index(self.hash(key)))
         }
     }
 
@@ -250,7 +250,7 @@ where
         while let Some(current_array) = unsafe { current_array_ptr.as_ref_unchecked() } {
             if let Some(old_array) = current_array.linked_array(guard) {
                 self.incremental_rehash_sync::<true>(current_array, guard);
-                let index = old_array.calculate_bucket_index(hash);
+                let index = old_array.bucket_index(hash);
                 if let Some(entry) = old_array.bucket(index).search_entry(
                     old_array.data_block(index),
                     key,
@@ -261,7 +261,7 @@ where
                 }
             }
 
-            let index = current_array.calculate_bucket_index(hash);
+            let index = current_array.bucket_index(hash);
             if let Some(entry) = current_array.bucket(index).search_entry(
                 current_array.data_block(index),
                 key,
@@ -293,23 +293,28 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        while let Some(current_array) = async_guard.load(self.bucket_array_var(), Acquire) {
-            let index = current_array.calculate_bucket_index(hash);
+        while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
+        {
             if current_array.has_linked_array() {
                 self.incremental_rehash_async(current_array, async_guard)
                     .await;
                 if !self
-                    .dedup_bucket_async(current_array, index, async_guard)
+                    .dedup_bucket_async(
+                        current_array,
+                        current_array.bucket_index(hash),
+                        async_guard,
+                    )
                     .await
                 {
                     continue;
                 }
             }
 
-            let bucket = current_array.bucket(index);
+            let bucket_index = current_array.bucket_index(hash);
+            let bucket = current_array.bucket(bucket_index);
             if let Some(reader) = Reader::try_lock(bucket) {
                 if let Some(entry) = reader.search_entry(
-                    current_array.data_block(index),
+                    current_array.data_block(bucket_index),
                     key,
                     hash,
                     async_guard.guard(),
@@ -319,7 +324,7 @@ where
                 break;
             } else if let Some(reader) = Reader::lock_async(bucket, async_guard).await {
                 if let Some(entry) = reader.search_entry(
-                    current_array.data_block(index),
+                    current_array.data_block(bucket_index),
                     key,
                     hash,
                     async_guard.guard(),
@@ -346,7 +351,7 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         while let Some(current_array) = self.bucket_array(guard) {
-            let index = current_array.calculate_bucket_index(hash);
+            let index = current_array.bucket_index(hash);
             if let Some(old_array) = current_array.linked_array(guard) {
                 self.incremental_rehash_sync::<false>(current_array, guard);
                 self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
@@ -380,18 +385,22 @@ where
 
         loop {
             let current_array = self.get_or_create_bucket_array(async_guard.guard());
-            let bucket_index = current_array.calculate_bucket_index(hash);
             if current_array.has_linked_array() {
                 self.incremental_rehash_async(current_array, async_guard)
                     .await;
                 if !self
-                    .dedup_bucket_async(current_array, bucket_index, async_guard)
+                    .dedup_bucket_async(
+                        current_array,
+                        current_array.bucket_index(hash),
+                        async_guard,
+                    )
                     .await
                 {
                     continue;
                 }
             }
 
+            let bucket_index = current_array.bucket_index(hash);
             let bucket = current_array.bucket(bucket_index);
             if (TYPE != CACHE || current_array.num_slots() < self.maximum_capacity())
                 && bucket.len() >= BUCKET_LEN - 1
@@ -427,7 +436,7 @@ where
 
         loop {
             let current_array = self.get_or_create_bucket_array(guard);
-            let bucket_index = current_array.calculate_bucket_index(hash);
+            let bucket_index = current_array.bucket_index(hash);
             if let Some(old_array) = current_array.linked_array(guard) {
                 self.incremental_rehash_sync::<false>(current_array, guard);
                 self.dedup_bucket_sync::<false>(current_array, old_array, bucket_index, guard);
@@ -465,19 +474,24 @@ where
             return Some(locked_bucket);
         }
 
-        while let Some(current_array) = async_guard.load(self.bucket_array_var(), Acquire) {
-            let bucket_index = current_array.calculate_bucket_index(hash);
+        while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
+        {
             if current_array.has_linked_array() {
                 self.incremental_rehash_async(current_array, async_guard)
                     .await;
                 if !self
-                    .dedup_bucket_async(current_array, bucket_index, async_guard)
+                    .dedup_bucket_async(
+                        current_array,
+                        current_array.bucket_index(hash),
+                        async_guard,
+                    )
                     .await
                 {
                     continue;
                 }
             }
 
+            let bucket_index = current_array.bucket_index(hash);
             let bucket = current_array.bucket(bucket_index);
             if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
                 return Some(LockedBucket {
@@ -505,7 +519,7 @@ where
         }
 
         while let Some(current_array) = self.bucket_array(guard) {
-            let bucket_index = current_array.calculate_bucket_index(hash);
+            let bucket_index = current_array.bucket_index(hash);
             if let Some(old_array) = current_array.linked_array(guard) {
                 self.incremental_rehash_sync::<false>(current_array, guard);
                 self.dedup_bucket_sync::<false>(current_array, old_array, bucket_index, guard);
@@ -535,7 +549,7 @@ where
             if current_array.has_linked_array() {
                 return None;
             }
-            let bucket_index = current_array.calculate_bucket_index(hash);
+            let bucket_index = current_array.bucket_index(hash);
             let bucket = current_array.bucket(bucket_index);
             if CHECK_SIZE && bucket.len() >= BUCKET_LEN {
                 return None;
@@ -562,7 +576,8 @@ where
     {
         let mut start_index = 0;
         let mut prev_len = 0;
-        while let Some(current_array) = async_guard.load(self.bucket_array_var(), Acquire) {
+        while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
+        {
             // In case the method is repeating the routine, iterate over entries from the middle of
             // the array.
             start_index = if prev_len == 0 || prev_len == current_array.len() {
@@ -573,12 +588,11 @@ where
             prev_len = current_array.len();
 
             while start_index < current_array.len() {
-                let index = start_index;
                 if current_array.has_linked_array() {
                     self.incremental_rehash_async(current_array, async_guard)
                         .await;
                     if !self
-                        .dedup_bucket_async(current_array, index, async_guard)
+                        .dedup_bucket_async(current_array, start_index, async_guard)
                         .await
                     {
                         // Retry the operation since there is a possibility that the current bucket
@@ -587,13 +601,13 @@ where
                     }
                 }
 
-                let bucket = current_array.bucket(index);
+                let bucket = current_array.bucket(start_index);
                 if let Some(reader) = Reader::lock_async(bucket, async_guard).await {
                     if !async_guard.check_ref(self.bucket_array_var(), current_array, Acquire) {
                         // `current_array` is no longer the current one.
                         break;
                     }
-                    let data_block = current_array.data_block(index);
+                    let data_block = current_array.data_block(start_index);
                     if !f(reader, data_block) {
                         return;
                     }
@@ -672,7 +686,8 @@ where
     {
         let mut prev_len = expected_array_len;
         let mut removed = false;
-        while let Some(current_array) = async_guard.load(self.bucket_array_var(), Acquire) {
+        while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
+        {
             // In case the method is repeating the routine, iterate over entries from the middle of
             // the array.
             let current_array_len = current_array.len();
@@ -806,7 +821,7 @@ where
     fn try_reserve_bucket(&self, hash: u64, guard: &Guard) -> Option<LockedBucket<K, V, L, TYPE>> {
         loop {
             let current_array = self.get_or_create_bucket_array(guard);
-            let bucket_index = current_array.calculate_bucket_index(hash);
+            let bucket_index = current_array.bucket_index(hash);
             if let Some(old_array) = current_array.linked_array(guard) {
                 self.incremental_rehash_sync::<true>(current_array, guard);
                 if !self.dedup_bucket_sync::<true>(current_array, old_array, bucket_index, guard) {
@@ -859,7 +874,9 @@ where
             return false;
         }
 
-        if let Some(old_array) = async_guard.load(current_array.linked_array_var(), Acquire) {
+        if let Some(old_array) =
+            async_guard.load_unchecked(current_array.linked_array_var(), Acquire)
+        {
             let range = from_index_to_range(current_array.len(), old_array.len(), index);
             for old_index in range.0..range.1 {
                 let bucket = old_array.bucket(old_index);
@@ -1074,7 +1091,7 @@ where
                 (0, u64::from(entry_ptr.partial_hash(&**old_writer)))
             } else {
                 let hash = self.hash(&entry_ptr.get(old_data_block).0);
-                let new_index = current_array.calculate_bucket_index(hash);
+                let new_index = current_array.bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
                 (new_index - target_index, hash)
             };
@@ -1131,7 +1148,7 @@ where
             let index = if old_array.len() >= current_array.len() {
                 target_index
             } else {
-                current_array.calculate_bucket_index(hash)
+                current_array.bucket_index(hash)
             };
             current_array.bucket(index).extract_from(
                 current_array.data_block(index),
@@ -1214,7 +1231,9 @@ where
         current_array: &'g BucketArray<K, V, L, TYPE>,
         async_guard: &'g AsyncGuard,
     ) {
-        if let Some(old_array) = async_guard.load(current_array.linked_array_var(), Acquire) {
+        if let Some(old_array) =
+            async_guard.load_unchecked(current_array.linked_array_var(), Acquire)
+        {
             if let Some(current) = Self::start_incremental_rehash(old_array) {
                 let rehashing_guard = ExitGuard::new((old_array, current), |(old_array, prev)| {
                     Self::end_incremental_rehash(old_array, prev, false);

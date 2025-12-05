@@ -56,18 +56,21 @@ impl AsyncGuard {
         }
     }
 
-    /// Loads the content of the [`AtomicShared`] without exposing the [`Guard`].
+    /// Loads the content of the [`AtomicShared`] without exposing the [`Guard`] or checking tag
+    /// bits.
     #[inline]
-    pub(crate) fn load<T>(&self, atomic_ptr: &AtomicShared<T>, mo: Ordering) -> Option<&T> {
-        atomic_ptr.load(mo, self.guard()).as_ref()
+    pub(crate) fn load_unchecked<T>(
+        &self,
+        atomic_ptr: &AtomicShared<T>,
+        mo: Ordering,
+    ) -> Option<&T> {
+        unsafe { atomic_ptr.load(mo, self.guard()).as_ref_unchecked() }
     }
 
     /// Checks if the reference is valid.
     #[inline]
     pub(crate) fn check_ref<T>(&self, atomic_ptr: &AtomicShared<T>, r: &T, mo: Ordering) -> bool {
-        atomic_ptr
-            .load(mo, self.guard())
-            .as_ref()
+        self.load_unchecked(atomic_ptr, mo)
             .is_some_and(|s| ptr::eq(s, r))
     }
 }

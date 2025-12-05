@@ -111,7 +111,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Calculates the [`Bucket`] index for the hash value.
     #[allow(clippy::cast_possible_truncation)] // Intended truncation.
     #[inline]
-    pub(crate) const fn calculate_bucket_index(&self, hash: u64) -> usize {
+    pub(crate) const fn bucket_index(&self, hash: u64) -> usize {
         // Take the upper n-bits to make sure that a single bucket is spread across a few adjacent
         // buckets when the hash table is resized.
         (hash >> self.hash_offset) as usize
