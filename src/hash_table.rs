@@ -244,12 +244,13 @@ where
 
     /// Peeks an entry from the [`HashTable`].
     #[inline]
-    fn peek_entry<'g, Q>(&self, key: &Q, hash: u64, guard: &'g Guard) -> Option<&'g (K, V)>
+    fn peek_entry<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g (K, V)>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         debug_assert_eq!(TYPE, INDEX);
 
+        let hash = self.hash(key);
         let mut current_array_ptr = self.bucket_array_var().load(Acquire, guard);
         while let Some(current_array) = unsafe { current_array_ptr.as_ref_unchecked() } {
             if let Some(old_array) = current_array.linked_array(guard) {
@@ -287,15 +288,11 @@ where
     /// Reads an entry asynchronously from the [`HashTable`] with a shared lock acquired on the
     /// bucket.
     #[inline]
-    async fn reader_async<Q, R, F: FnOnce(&K, &V) -> R>(
-        &self,
-        key: &Q,
-        hash: u64,
-        f: F,
-    ) -> Option<R>
+    async fn reader_async<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, f: F) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        let hash = self.hash(key);
         let async_guard = pin!(AsyncGuard::default());
         while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
         {
@@ -344,27 +341,23 @@ where
     /// Reads an entry synchronously from the [`HashTable`] with a shared lock acquired on the
     /// bucket.
     #[inline]
-    fn reader_sync<Q, R, F: FnOnce(&K, &V) -> R>(
-        &self,
-        key: &Q,
-        hash: u64,
-        f: F,
-        guard: &Guard,
-    ) -> Option<R>
+    fn reader_sync<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, f: F) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        while let Some(current_array) = self.bucket_array(guard) {
+        let hash = self.hash(key);
+        let guard = Guard::new();
+        while let Some(current_array) = self.bucket_array(&guard) {
             let index = current_array.bucket_index(hash);
-            if let Some(old_array) = current_array.linked_array(guard) {
-                self.incremental_rehash_sync::<false>(current_array, guard);
-                self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+            if let Some(old_array) = current_array.linked_array(&guard) {
+                self.incremental_rehash_sync::<false>(current_array, &guard);
+                self.dedup_bucket_sync::<false>(current_array, old_array, index, &guard);
             }
 
             let bucket = current_array.bucket(index);
             if let Some(reader) = Reader::lock_sync(bucket) {
                 if let Some(entry) =
-                    reader.search_entry(current_array.data_block(index), key, hash, guard)
+                    reader.search_entry(current_array.data_block(index), key, hash, &guard)
                 {
                     return Some(f(&entry.0, &entry.1));
                 }
@@ -1621,6 +1614,8 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
     where
         H: BuildHasher,
     {
+        debug_assert!(!ptr::eq(guard, fake_guard()));
+
         let removed = self.writer.remove(self.data_block, entry_ptr, guard);
         self.try_shrink_or_rebuild(hash_table, guard);
         removed
@@ -1636,6 +1631,8 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
     ) where
         H: BuildHasher,
     {
+        debug_assert!(!ptr::eq(guard, fake_guard()));
+
         self.writer.mark_removed(entry_ptr, guard);
         if TYPE == INDEX {
             self.writer
@@ -1653,6 +1650,8 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
     ) where
         H: BuildHasher,
     {
+        debug_assert!(!ptr::eq(guard, fake_guard()));
+
         if (TYPE == INDEX && self.writer.need_rebuild()) || self.writer.len() == 0 {
             if let Some(current_array) = hash_table.bucket_array(guard) {
                 if ptr::eq(current_array, self.bucket_array()) {
@@ -1715,12 +1714,11 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         self,
         hash_table: &'h T,
         entry_ptr: &mut EntryPtr<'h, K, V, TYPE>,
-        guard: &'h Guard,
     ) -> Option<Self>
     where
         H: BuildHasher,
     {
-        if entry_ptr.move_to_next(&self.writer, guard) {
+        if entry_ptr.move_to_next(&self.writer, fake_guard()) {
             return Some(self);
         }
 
@@ -1728,7 +1726,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         let len = self.bucket_array().len();
 
         if self.writer.len() == 0 {
-            self.try_shrink_or_rebuild(hash_table, guard);
+            self.try_shrink_or_rebuild(hash_table, &Guard::new());
         } else {
             drop(self);
         }
@@ -1738,9 +1736,9 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         }
 
         let mut next_entry = None;
-        hash_table.for_each_writer_sync(next_index, len, guard, |locked_bucket, _| {
-            *entry_ptr = EntryPtr::new(guard);
-            if entry_ptr.move_to_next(&locked_bucket.writer, guard) {
+        hash_table.for_each_writer_sync(next_index, len, &Guard::new(), |locked_bucket, _| {
+            *entry_ptr = EntryPtr::new(fake_guard());
+            if entry_ptr.move_to_next(&locked_bucket.writer, fake_guard()) {
                 next_entry = Some(locked_bucket);
                 return true;
             }

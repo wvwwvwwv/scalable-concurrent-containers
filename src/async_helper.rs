@@ -30,9 +30,10 @@ pub(crate) trait TryWait {
     fn try_wait(&mut self, lock: &Lock);
 }
 
-/// Returns a fake [`Guard`] reference for methods that require a [`Guard`] to check the lifetime.
+/// Returns a fake [`Guard`] reference for methods receiving a [`Guard`] only to check the lifetime.
 #[inline]
 pub(super) const fn fake_guard() -> &'static Guard {
+    static FAKE_GUARD_GLOBAL: usize = 0;
     unsafe { &*ptr::from_ref(&FAKE_GUARD_GLOBAL).cast::<Guard>() }
 }
 
@@ -129,5 +130,3 @@ impl TryWait for () {
         let _: Result<_, _> = pinned_pager.poll_sync();
     }
 }
-
-static FAKE_GUARD_GLOBAL: usize = 0;

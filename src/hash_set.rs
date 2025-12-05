@@ -220,14 +220,13 @@ where
     pub async fn replace_async(&self, mut key: K) -> Option<K> {
         let hash = self.map.hash(&key);
         let mut locked_bucket = self.map.writer_async(hash).await;
-        let fake_guard = fake_guard();
-        let mut entry_ptr = locked_bucket.search(&key, hash, fake_guard);
+        let mut entry_ptr = locked_bucket.search(&key, hash, fake_guard());
         if entry_ptr.is_valid() {
             let k = &mut locked_bucket.entry_mut(&mut entry_ptr).0;
             swap(k, &mut key);
             Some(key)
         } else {
-            locked_bucket.insert(hash, (key, ()), fake_guard);
+            locked_bucket.insert(hash, (key, ()), fake_guard());
             None
         }
     }

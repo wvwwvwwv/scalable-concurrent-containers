@@ -5,7 +5,7 @@
 
 3.4.3
 
-* Maximum theoretically capacity is adjusted to `2^(usize::BITS - 2)`.
+* Maximum capacity limit is adjusted to `2^(usize::BITS - 2)`.
 * Minor `Future` size improvement.
 
 3.4.2

@@ -298,8 +298,7 @@ where
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
         let locked_bucket = self.writer_async(hash).await;
-        let fake_guard = fake_guard();
-        let entry_ptr = locked_bucket.search(&key, hash, fake_guard);
+        let entry_ptr = locked_bucket.search(&key, hash, fake_guard());
         if entry_ptr.is_valid() {
             Entry::Occupied(OccupiedEntry {
                 hashmap: self,
@@ -457,9 +456,8 @@ where
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
         let mut entry = None;
         self.for_each_writer_async(0, 0, |locked_bucket, _| {
-            let fake_guard = fake_guard();
-            let mut entry_ptr = EntryPtr::new(fake_guard);
-            while entry_ptr.move_to_next(&locked_bucket.writer, fake_guard) {
+            let mut entry_ptr = EntryPtr::new(fake_guard());
+            while entry_ptr.move_to_next(&locked_bucket.writer, fake_guard()) {
                 let (k, v) = locked_bucket.entry(&entry_ptr);
                 if pred(k, v) {
                     entry = Some(OccupiedEntry {
@@ -540,11 +538,10 @@ where
     pub async fn insert_async(&self, key: K, val: V) -> Result<(), (K, V)> {
         let hash = self.hash(&key);
         let locked_bucket = self.writer_async(hash).await;
-        let fake_guard = fake_guard();
-        if locked_bucket.search(&key, hash, fake_guard).is_valid() {
+        if locked_bucket.search(&key, hash, fake_guard()).is_valid() {
             Err((key, val))
         } else {
-            locked_bucket.insert(hash, (key, val), fake_guard);
+            locked_bucket.insert(hash, (key, val), fake_guard());
             Ok(())
         }
     }
@@ -654,8 +651,7 @@ where
     {
         let hash = self.hash(key);
         let mut locked_bucket = self.optional_writer_async(hash).await?;
-        let fake_guard = fake_guard();
-        let mut entry_ptr = locked_bucket.search(key, hash, fake_guard);
+        let mut entry_ptr = locked_bucket.search(key, hash, fake_guard());
         if entry_ptr.is_valid() {
             let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
             Some(updater(k, v))
@@ -746,8 +742,7 @@ where
     pub async fn replace_async(&self, key: K) -> ReplaceResult<'_, K, V, H> {
         let hash = self.hash(&key);
         let locked_bucket = self.writer_async(hash).await;
-        let fake_guard = fake_guard();
-        let mut entry_ptr = locked_bucket.search(&key, hash, fake_guard);
+        let mut entry_ptr = locked_bucket.search(&key, hash, fake_guard());
         if entry_ptr.is_valid() {
             let prev_key = replace(
                 &mut entry_ptr
@@ -915,8 +910,7 @@ where
     {
         let hash = self.hash(key);
         let mut locked_bucket = self.optional_writer_async(hash).await?;
-        let fake_guard = fake_guard();
-        let mut entry_ptr = locked_bucket.search(key, hash, fake_guard);
+        let mut entry_ptr = locked_bucket.search(key, hash, fake_guard());
         if entry_ptr.is_valid() && condition(&mut locked_bucket.entry_mut(&mut entry_ptr).1) {
             Some(locked_bucket.remove(self, &mut entry_ptr, &Guard::new()))
         } else {
@@ -982,8 +976,7 @@ where
     {
         let hash = self.hash(key);
         let locked_bucket = self.optional_writer_async(hash).await?;
-        let fake_guard = fake_guard();
-        let entry_ptr = locked_bucket.search(key, hash, fake_guard);
+        let entry_ptr = locked_bucket.search(key, hash, fake_guard());
         if entry_ptr.is_valid() {
             return Some(OccupiedEntry {
                 hashmap: self,
@@ -1053,8 +1046,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let hash = self.hash(key);
-        self.reader_async(key, hash, reader).await
+        self.reader_async(key, reader).await
     }
 
     /// Reads a key-value pair.
@@ -1077,9 +1069,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let hash = self.hash(key);
-        let guard = Guard::new();
-        self.reader_sync(key, hash, reader, &guard)
+        self.reader_sync(key, reader)
     }
 
     /// Returns `true` if the [`HashMap`] contains a value for the specified key.
@@ -1098,8 +1088,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let hash = self.hash(key);
-        self.reader_async(key, hash, |_, _| ()).await.is_some()
+        self.reader_async(key, |_, _| ()).await.is_some()
     }
 
     /// Returns `true` if the [`HashMap`] contains a value for the specified key.
@@ -1147,9 +1136,8 @@ where
     pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         self.for_each_reader_async(|reader, data_block| {
-            let fake_guard = fake_guard();
-            let mut entry_ptr = EntryPtr::new(fake_guard);
-            while entry_ptr.move_to_next(&reader, fake_guard) {
+            let mut entry_ptr = EntryPtr::new(fake_guard());
+            while entry_ptr.move_to_next(&reader, fake_guard()) {
                 let (k, v) = entry_ptr.get(data_block);
                 if !f(k, v) {
                     result = false;
@@ -1238,14 +1226,14 @@ where
     ) -> bool {
         let mut result = true;
         self.for_each_writer_async(0, 0, |mut locked_bucket, removed| {
-            let fake_guard = fake_guard();
-            let mut entry_ptr = EntryPtr::new(fake_guard);
-            while entry_ptr.move_to_next(&locked_bucket.writer, fake_guard) {
+            let guard = Guard::new();
+            let mut entry_ptr = EntryPtr::new(&guard);
+            while entry_ptr.move_to_next(&locked_bucket.writer, &guard) {
                 let consumable_entry = ConsumableEntry {
                     locked_bucket: &mut locked_bucket,
                     entry_ptr: &mut entry_ptr,
                     remove_probe: removed,
-                    guard: fake_guard,
+                    guard: &guard,
                 };
                 if !f(consumable_entry) {
                     result = false;
@@ -2035,10 +2023,11 @@ where
     pub async fn remove_and_async(self) -> ((K, V), Option<OccupiedEntry<'h, K, V, H>>) {
         let hashmap = self.hashmap;
         let mut entry_ptr = self.entry_ptr.clone();
+        let guard = Guard::new();
         let entry = self.locked_bucket.writer.remove(
             self.locked_bucket.data_block,
             &mut entry_ptr,
-            hashmap.prolonged_guard_ref(&Guard::new()),
+            hashmap.prolonged_guard_ref(&guard),
         );
         if let Some(locked_bucket) = self.locked_bucket.next_async(hashmap, &mut entry_ptr).await {
             return (
@@ -2094,10 +2083,7 @@ where
             &mut entry_ptr,
             prolonged_guard,
         );
-        if let Some(locked_bucket) =
-            self.locked_bucket
-                .next_sync(hashmap, &mut entry_ptr, prolonged_guard)
-        {
+        if let Some(locked_bucket) = self.locked_bucket.next_sync(hashmap, &mut entry_ptr) {
             return (
                 entry,
                 Some(OccupiedEntry {
@@ -2173,12 +2159,7 @@ where
     pub fn next_sync(self) -> Option<Self> {
         let hashmap = self.hashmap;
         let mut entry_ptr = self.entry_ptr.clone();
-        let guard = Guard::new();
-        let prolonged_guard = hashmap.prolonged_guard_ref(&guard);
-        if let Some(locked_bucket) =
-            self.locked_bucket
-                .next_sync(hashmap, &mut entry_ptr, prolonged_guard)
-        {
+        if let Some(locked_bucket) = self.locked_bucket.next_sync(hashmap, &mut entry_ptr) {
             return Some(OccupiedEntry {
                 hashmap,
                 locked_bucket,
