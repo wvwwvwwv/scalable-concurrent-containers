@@ -413,7 +413,6 @@ where
                     async_guard.guard(),
                 );
             }
-
             if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
                 return LockedBucket {
                     writer,

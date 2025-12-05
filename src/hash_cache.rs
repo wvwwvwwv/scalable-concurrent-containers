@@ -732,7 +732,11 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.read_async(key, |_, _| ()).await.is_some()
+        let hash = self.hash(key);
+        let async_guard = pin!(AsyncGuard::default());
+        self.reader_async(key, hash, |_, _| (), &async_guard)
+            .await
+            .is_some()
     }
 
     /// Returns `true` if the [`HashCache`] contains a value for the specified key.
