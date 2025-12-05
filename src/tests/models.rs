@@ -127,7 +127,7 @@ fn hashmap_key_uniqueness() {
             assert!(thread_insert.join().is_ok());
 
             for k in 0..max_key {
-                assert!(hashmap.read_sync(&k, |_, _| ()).is_some());
+                assert!(hashmap.read_sync(&k, |_, _| ()).is_some(), "{k} {max_key}");
             }
             assert!(hashmap.read_sync(&usize::MAX, |_, _| ()).is_some());
             assert_eq!(hashmap.len(), max_key + 1);

@@ -6,9 +6,12 @@ use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
 use std::ops::{Deref, DerefMut, RangeInclusive};
 use std::pin::pin;
+#[cfg(not(feature = "loom"))]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
+#[cfg(feature = "loom")]
+use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Guard, Shared, Tag};
 
 use super::Equivalent;

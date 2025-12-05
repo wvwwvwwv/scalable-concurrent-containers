@@ -8,17 +8,21 @@ use std::ops::{Deref, RangeInclusive};
 use std::panic::UnwindSafe;
 use std::pin::pin;
 use std::ptr;
+use std::sync::atomic::AtomicU8;
+#[cfg(not(feature = "loom"))]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicU8, AtomicUsize};
 
+#[cfg(feature = "loom")]
+use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Epoch, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
+use super::async_helper::AsyncGuard;
 use super::hash_table::HashTable;
+use super::hash_table::LockedBucket;
 use super::hash_table::bucket::{Bucket, EntryPtr, INDEX};
 use super::hash_table::bucket_array::BucketArray;
-use crate::async_helper::AsyncGuard;
-use crate::hash_table::LockedBucket;
 
 /// Scalable concurrent hash index.
 ///

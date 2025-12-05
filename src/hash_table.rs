@@ -6,17 +6,21 @@ use std::mem::forget;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::ptr::{self, NonNull, from_ref};
+
+#[cfg(not(feature = "loom"))]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 use bucket::{BUCKET_LEN, CACHE, DataBlock, EntryPtr, INDEX, LruList, Reader, Writer};
 use bucket_array::BucketArray;
+#[cfg(feature = "loom")]
+use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
+use super::async_helper::AsyncGuard;
 use super::exit_guard::ExitGuard;
-use crate::async_helper::AsyncGuard;
-use crate::hash_table::bucket::Bucket;
+use super::hash_table::bucket::Bucket;
 
 /// `HashTable` defines common functions for hash table implementations.
 pub(super) trait HashTable<K, V, H, L: LruList, const TYPE: char>

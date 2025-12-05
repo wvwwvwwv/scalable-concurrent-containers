@@ -6,17 +6,20 @@ use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
 use std::ops::{Deref, DerefMut, RangeInclusive};
 use std::pin::pin;
+#[cfg(not(feature = "loom"))]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
+#[cfg(feature = "loom")]
+use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Guard, Shared, Tag};
 
 use super::Equivalent;
+use super::async_helper::AsyncGuard;
 use super::hash_table::HashTable;
+use super::hash_table::LockedBucket;
 use super::hash_table::bucket::{EntryPtr, MAP};
 use super::hash_table::bucket_array::BucketArray;
-use crate::async_helper::AsyncGuard;
-use crate::hash_table::LockedBucket;
 
 /// Scalable concurrent hash map.
 ///

@@ -11,10 +11,10 @@ use std::pin::pin;
 
 use sdd::Guard;
 
+use super::async_helper::AsyncGuard;
+use super::hash_map;
 use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
-use crate::async_helper::AsyncGuard;
-use crate::hash_map;
 
 /// Scalable concurrent hash set.
 ///
