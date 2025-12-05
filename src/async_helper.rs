@@ -1,6 +1,6 @@
 use std::cell::UnsafeCell;
 use std::pin::{Pin, pin};
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::sync::atomic::Ordering;
 
 use saa::lock::Mode;
@@ -29,6 +29,10 @@ pub(crate) trait TryWait {
     /// available.
     fn try_wait(&mut self, lock: &Lock);
 }
+
+/// A zero-sized type to pass references to methods that require a [`Guard`] just to match the lifetime.
+#[derive(Debug, Default)]
+pub struct FakeGuard;
 
 impl AsyncGuard {
     /// Returns `true` if the [`AsyncGuard`] contains a valid [`Guard`].
@@ -121,5 +125,12 @@ impl TryWait for () {
         let mut pinned_pager = pin!(Pager::default());
         lock.register_pager(&mut pinned_pager, Mode::WaitExclusive, true);
         let _: Result<_, _> = pinned_pager.poll_sync();
+    }
+}
+
+impl AsRef<Guard> for FakeGuard {
+    #[inline]
+    fn as_ref(&self) -> &Guard {
+        unsafe { std::mem::transmute::<NonNull<Guard>, &Guard>(NonNull::dangling()) }
     }
 }

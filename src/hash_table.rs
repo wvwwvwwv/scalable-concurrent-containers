@@ -4,7 +4,7 @@ pub mod bucket_array;
 use std::hash::{BuildHasher, Hash};
 use std::mem::forget;
 use std::ops::Deref;
-use std::pin::Pin;
+use std::pin::pin;
 use std::ptr::{self, NonNull, from_ref};
 
 #[cfg(not(feature = "loom"))]
@@ -16,6 +16,8 @@ use bucket_array::BucketArray;
 #[cfg(feature = "loom")]
 use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+
+use crate::async_helper::FakeGuard;
 
 use super::Equivalent;
 use super::async_helper::AsyncGuard;
@@ -292,21 +294,21 @@ where
         key: &Q,
         hash: u64,
         f: F,
-        async_guard: &AsyncGuard,
     ) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        let async_guard = pin!(AsyncGuard::default());
         while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
         {
             if current_array.has_linked_array() {
-                self.incremental_rehash_async(current_array, async_guard)
+                self.incremental_rehash_async(current_array, &async_guard)
                     .await;
                 if !self
                     .dedup_bucket_async(
                         current_array,
                         current_array.bucket_index(hash),
-                        async_guard,
+                        &async_guard,
                     )
                     .await
                 {
@@ -326,7 +328,7 @@ where
                     return Some(f(&entry.0, &entry.1));
                 }
                 break;
-            } else if let Some(reader) = Reader::lock_async(bucket, async_guard).await {
+            } else if let Some(reader) = Reader::lock_async(bucket, &async_guard).await {
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(bucket_index),
                     key,
@@ -378,25 +380,21 @@ where
     ///
     /// If the container is empty, a new bucket array is allocated.
     #[inline]
-    async fn writer_async(
-        &self,
-        hash: u64,
-        async_guard: &AsyncGuard,
-    ) -> LockedBucket<K, V, L, TYPE> {
+    async fn writer_async(&self, hash: u64) -> LockedBucket<K, V, L, TYPE> {
+        let async_guard = pin!(AsyncGuard::default());
         if let Some(locked_bucket) = self.try_optional_writer::<true>(hash, async_guard.guard()) {
             return locked_bucket;
         }
-
         loop {
             let current_array = self.get_or_create_bucket_array(async_guard.guard());
             if current_array.has_linked_array() {
-                self.incremental_rehash_async(current_array, async_guard)
+                self.incremental_rehash_async(current_array, &async_guard)
                     .await;
                 if !self
                     .dedup_bucket_async(
                         current_array,
                         current_array.bucket_index(hash),
-                        async_guard,
+                        &async_guard,
                     )
                     .await
                 {
@@ -417,7 +415,7 @@ where
                     async_guard.guard(),
                 );
             }
-            if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
+            if let Some(writer) = Writer::lock_async(bucket, &async_guard).await {
                 return LockedBucket {
                     writer,
                     data_block: current_array.data_block(bucket_index),
@@ -468,25 +466,21 @@ where
     ///
     /// If the container is empty, `None` is returned.
     #[inline]
-    async fn optional_writer_async(
-        &self,
-        hash: u64,
-        async_guard: &AsyncGuard,
-    ) -> Option<LockedBucket<K, V, L, TYPE>> {
+    async fn optional_writer_async(&self, hash: u64) -> Option<LockedBucket<K, V, L, TYPE>> {
+        let async_guard = pin!(AsyncGuard::default());
         if let Some(locked_bucket) = self.try_optional_writer::<false>(hash, async_guard.guard()) {
             return Some(locked_bucket);
         }
-
         while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
         {
             if current_array.has_linked_array() {
-                self.incremental_rehash_async(current_array, async_guard)
+                self.incremental_rehash_async(current_array, &async_guard)
                     .await;
                 if !self
                     .dedup_bucket_async(
                         current_array,
                         current_array.bucket_index(hash),
-                        async_guard,
+                        &async_guard,
                     )
                     .await
                 {
@@ -496,7 +490,7 @@ where
 
             let bucket_index = current_array.bucket_index(hash);
             let bucket = current_array.bucket(bucket_index);
-            if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
+            if let Some(writer) = Writer::lock_async(bucket, &async_guard).await {
                 return Some(LockedBucket {
                     writer,
                     data_block: current_array.data_block(bucket_index),
@@ -573,10 +567,11 @@ where
     ///
     /// This method stops iterating when the closure returns `false`.
     #[inline]
-    async fn for_each_reader_async<F>(&self, async_guard: &AsyncGuard, mut f: F)
+    async fn for_each_reader_async<F>(&self, mut f: F)
     where
         F: FnMut(Reader<K, V, L, TYPE>, NonNull<DataBlock<K, V, BUCKET_LEN>>) -> bool,
     {
+        let async_guard = pin!(AsyncGuard::default());
         let mut start_index = 0;
         let mut prev_len = 0;
         while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
@@ -592,10 +587,10 @@ where
 
             while start_index < current_array.len() {
                 if current_array.has_linked_array() {
-                    self.incremental_rehash_async(current_array, async_guard)
+                    self.incremental_rehash_async(current_array, &async_guard)
                         .await;
                     if !self
-                        .dedup_bucket_async(current_array, start_index, async_guard)
+                        .dedup_bucket_async(current_array, start_index, &async_guard)
                         .await
                     {
                         // Retry the operation since there is a possibility that the current bucket
@@ -605,7 +600,7 @@ where
                 }
 
                 let bucket = current_array.bucket(start_index);
-                if let Some(reader) = Reader::lock_async(bucket, async_guard).await {
+                if let Some(reader) = Reader::lock_async(bucket, &async_guard).await {
                     if !async_guard.check_ref(self.bucket_array_var(), current_array, Acquire) {
                         // `current_array` is no longer the current one.
                         break;
@@ -682,11 +677,11 @@ where
         &self,
         mut start_index: usize,
         expected_array_len: usize,
-        async_guard: &AsyncGuard,
         mut f: F,
     ) where
         F: FnMut(LockedBucket<K, V, L, TYPE>, &mut bool) -> bool,
     {
+        let async_guard = pin!(AsyncGuard::default());
         let mut prev_len = expected_array_len;
         let mut removed = false;
         while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
@@ -704,10 +699,10 @@ where
             while start_index < current_array_len {
                 let bucket_index = start_index;
                 if current_array.has_linked_array() {
-                    self.incremental_rehash_async(current_array, async_guard)
+                    self.incremental_rehash_async(current_array, &async_guard)
                         .await;
                     if !self
-                        .dedup_bucket_async(current_array, bucket_index, async_guard)
+                        .dedup_bucket_async(current_array, bucket_index, &async_guard)
                         .await
                     {
                         // Retry the operation since there is a possibility that the current bucket
@@ -717,7 +712,7 @@ where
                 }
 
                 let bucket = current_array.bucket(bucket_index);
-                if let Some(writer) = Writer::lock_async(bucket, async_guard).await {
+                if let Some(writer) = Writer::lock_async(bucket, &async_guard).await {
                     if !async_guard.check_ref(self.bucket_array_var(), current_array, Acquire) {
                         // `current_array` is no longer the current one.
                         break;
@@ -1679,13 +1674,11 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         self,
         hash_table: &'h T,
         entry_ptr: &mut EntryPtr<'h, K, V, TYPE>,
-        async_guard: &mut Pin<&mut AsyncGuard>,
     ) -> Option<LockedBucket<K, V, L, TYPE>>
     where
         H: BuildHasher,
     {
-        let prolonged_guard = hash_table.prolonged_guard_ref(async_guard.guard());
-        if entry_ptr.move_to_next(&self.writer, prolonged_guard) {
+        if entry_ptr.move_to_next(&self.writer, FakeGuard.as_ref()) {
             return Some(self);
         }
 
@@ -1693,7 +1686,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         let len = self.bucket_array().len();
 
         if self.writer.len() == 0 {
-            self.try_shrink_or_rebuild(hash_table, prolonged_guard);
+            self.try_shrink_or_rebuild(hash_table, &Guard::new());
         } else {
             drop(self);
         }
@@ -1704,10 +1697,10 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
 
         let mut next_entry = None;
         hash_table
-            .for_each_writer_async(next_index, len, async_guard, |locked_bucket, _| {
-                let guard = hash_table.prolonged_guard_ref(async_guard.guard());
-                *entry_ptr = EntryPtr::new(guard);
-                if entry_ptr.move_to_next(&locked_bucket.writer, guard) {
+            .for_each_writer_async(next_index, len, |locked_bucket, _| {
+                let fake_guard = hash_table.prolonged_guard_ref(FakeGuard.as_ref());
+                *entry_ptr = EntryPtr::new(fake_guard);
+                if entry_ptr.move_to_next(&locked_bucket.writer, fake_guard) {
                     next_entry = Some(locked_bucket);
                     return true;
                 }

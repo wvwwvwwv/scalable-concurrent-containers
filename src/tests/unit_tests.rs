@@ -145,9 +145,9 @@ mod hashmap {
     fn future_size() {
         // TODO: writer_async = 480B.
         // TODO: incremental_rehash_async/dedup_bucket_async = 416B.
-        // TODO: relocate_bucket_async = 312B.
+        // TODO: relocate_bucket_async
         // TODO: lock_async = 200B.
-        let base_size = 520; // In v2, 104.
+        let base_size = 504; // In v2, 104.
         // Small type.
         {
             let limit = base_size; // In v2, 104.
