@@ -8,9 +8,6 @@ use std::hash::{BuildHasher, Hash};
 use std::mem::swap;
 use std::ops::{Deref, RangeInclusive};
 
-use sdd::Guard;
-
-use super::async_helper::fake_guard;
 use super::hash_map;
 use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
@@ -27,8 +24,8 @@ where
 
 /// [`ConsumableEntry`] is a view into an occupied entry in a [`HashSet`] when iterating over
 /// entries in it.
-pub struct ConsumableEntry<'w, 'g: 'w, K> {
-    consumable: hash_map::ConsumableEntry<'w, 'g, K, ()>,
+pub struct ConsumableEntry<'w, K> {
+    consumable: hash_map::ConsumableEntry<'w, K, ()>,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashSet`] higher than a certain level.
@@ -220,13 +217,13 @@ where
     pub async fn replace_async(&self, mut key: K) -> Option<K> {
         let hash = self.map.hash(&key);
         let mut locked_bucket = self.map.writer_async(hash).await;
-        let mut entry_ptr = locked_bucket.search(&key, hash, fake_guard());
+        let mut entry_ptr = locked_bucket.search(&key, hash);
         if entry_ptr.is_valid() {
             let k = &mut locked_bucket.entry_mut(&mut entry_ptr).0;
             swap(k, &mut key);
             Some(key)
         } else {
-            locked_bucket.insert(hash, (key, ()), fake_guard());
+            locked_bucket.insert(hash, (key, ()));
             None
         }
     }
@@ -272,15 +269,14 @@ where
     #[inline]
     pub fn replace_sync(&self, mut key: K) -> Option<K> {
         let hash = self.map.hash(&key);
-        let guard = Guard::new();
-        let mut locked_bucket = self.map.writer_sync(hash, &guard);
-        let mut entry_ptr = locked_bucket.search(&key, hash, &guard);
+        let mut locked_bucket = self.map.writer_sync(hash);
+        let mut entry_ptr = locked_bucket.search(&key, hash);
         if entry_ptr.is_valid() {
             let k = &mut locked_bucket.entry_mut(&mut entry_ptr).0;
             swap(k, &mut key);
             Some(key)
         } else {
-            locked_bucket.insert(hash, (key, ()), &guard);
+            locked_bucket.insert(hash, (key, ()));
             None
         }
     }
@@ -547,10 +543,7 @@ where
     /// };
     /// ```
     #[inline]
-    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, '_, K>) -> bool>(
-        &self,
-        mut f: F,
-    ) -> bool {
+    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
         self.map
             .iter_mut_async(|consumable| f(ConsumableEntry { consumable }))
             .await
@@ -585,7 +578,7 @@ where
     /// assert_eq!(hashset.len(), 2);
     /// ```
     #[inline]
-    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, '_, K>) -> bool>(&self, mut f: F) -> bool {
+    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
         self.map
             .iter_mut_sync(|consumable| f(ConsumableEntry { consumable }))
     }
@@ -912,7 +905,7 @@ where
     }
 }
 
-impl<K> ConsumableEntry<'_, '_, K> {
+impl<K> ConsumableEntry<'_, K> {
     /// Consumes the entry by moving out the key.
     ///
     /// # Examples
@@ -945,7 +938,7 @@ impl<K> ConsumableEntry<'_, '_, K> {
     }
 }
 
-impl<K> Deref for ConsumableEntry<'_, '_, K> {
+impl<K> Deref for ConsumableEntry<'_, K> {
     type Target = K;
 
     #[inline]

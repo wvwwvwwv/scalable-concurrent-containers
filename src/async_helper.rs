@@ -40,7 +40,7 @@ pub(super) const fn fake_guard() -> &'static Guard {
 impl AsyncGuard {
     /// Returns `true` if the [`AsyncGuard`] contains a valid [`Guard`].
     #[inline]
-    pub(crate) fn has_guard(&self) -> bool {
+    pub(crate) const fn has_guard(&self) -> bool {
         unsafe { (*self.guard.get()).is_some() }
     }
 
