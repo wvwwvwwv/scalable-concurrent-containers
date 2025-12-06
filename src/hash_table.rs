@@ -1105,7 +1105,6 @@ where
                     old_writer,
                     old_data_block,
                     &mut entry_ptr,
-                    guard,
                 );
             }
         }
@@ -1145,7 +1144,6 @@ where
                 old_writer,
                 old_data_block,
                 &mut entry_ptr,
-                guard,
             );
         }
     }
@@ -1576,7 +1574,7 @@ impl<K, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> {
             self.writer
                 .try_drop_unreachable_entries(self.data_block, guard);
         }
-        self.writer.insert(self.data_block, hash, entry, guard)
+        self.writer.insert(self.data_block, hash, entry)
     }
 }
 

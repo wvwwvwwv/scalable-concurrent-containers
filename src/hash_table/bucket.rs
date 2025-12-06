@@ -10,7 +10,7 @@ use saa::Lock;
 use sdd::{AtomicShared, Epoch, Guard, Shared, Tag};
 
 use crate::Equivalent;
-use crate::async_helper::AsyncGuard;
+use crate::async_helper::{AsyncGuard, fake_guard};
 
 /// [`Bucket`] is a lock-protected fixed-size entry array.
 ///
@@ -161,7 +161,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         hash: u64,
         entry: (K, V),
-        guard: &Guard,
     ) -> EntryPtr<K, V, TYPE> {
         let len = self.len.load(Relaxed);
         assert_ne!(len, u32::MAX, "bucket overflow");
@@ -169,7 +168,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
         let free_index = occupied_bitmap.trailing_ones() as usize;
         if free_index == BUCKET_LEN {
-            self.insert_overflow(hash, entry, guard)
+            self.insert_overflow(hash, entry)
         } else {
             self.insert_entry(
                 &self.metadata,
@@ -350,7 +349,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         from_writer: &Writer<K, V, L, TYPE>,
         from_data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         from_entry_ptr: &mut EntryPtr<K, V, TYPE>,
-        guard: &Guard,
     ) {
         debug_assert!(self.rw_lock.is_locked(Relaxed));
 
@@ -359,7 +357,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         } else {
             Self::read_data_block(unsafe { from_data_block.as_ref() }, from_entry_ptr.index)
         };
-        self.insert(data_block, hash, entry, guard);
+        self.insert(data_block, hash, entry);
 
         let mo = if TYPE == INDEX { Release } else { Relaxed };
         if let Some(link) = link_ref(from_entry_ptr.link_ptr) {
@@ -425,8 +423,8 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     }
 
     /// inserts an entry into the linked list.
-    fn insert_overflow(&self, hash: u64, entry: (K, V), guard: &Guard) -> EntryPtr<K, V, TYPE> {
-        let mut link_ptr = self.metadata.load_link(guard);
+    fn insert_overflow(&self, hash: u64, entry: (K, V)) -> EntryPtr<K, V, TYPE> {
+        let mut link_ptr = self.metadata.load_link(fake_guard());
         while let Some(link) = link_ref(link_ptr) {
             let occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
             let free_index = occupied_bitmap.trailing_ones() as usize;
@@ -446,11 +444,11 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                     index: free_index,
                 };
             }
-            link_ptr = link.metadata.load_link(guard);
+            link_ptr = link.metadata.load_link(fake_guard());
         }
 
         // Insert a new `LinkedBucket` at the linked list head.
-        let head = self.metadata.link.get_shared(Relaxed, guard);
+        let head = self.metadata.link.get_shared(Relaxed, fake_guard());
         let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
         self.write_cell(&link.data_block[0], |block| unsafe {
             block.as_mut_ptr().write(entry);
@@ -459,7 +457,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             *h = Self::partial_hash(hash);
         });
         link.metadata.occupied_bitmap.store(1, Relaxed);
-        if let Some(head) = link_ref(link.metadata.load_link(guard)) {
+        if let Some(head) = link_ref(link.metadata.load_link(fake_guard())) {
             head.prev_link.store(link.as_ptr().cast_mut(), Relaxed);
         }
         let link_ptr = link.as_ptr();
@@ -1386,11 +1384,10 @@ mod test {
                 unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = Bucket::new();
             for v in 0..xs {
-                let guard = Guard::new();
                 let writer = Writer::lock_sync(&bucket).unwrap();
                 let evicted = writer.evict_lru_head(data_block_ptr);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
-                writer.insert(data_block_ptr, 0, (v, v), &guard);
+                writer.insert(data_block_ptr, 0, (v, v));
                 assert_eq!(writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
             }
         }
@@ -1407,7 +1404,7 @@ mod test {
             let writer = Writer::lock_sync(&bucket).unwrap();
             for _ in 0..3 {
                 for v in 0..xs {
-                    let entry_ptr = writer.insert(data_block_ptr, 0, (v, v), &guard);
+                    let entry_ptr = writer.insert(data_block_ptr, 0, (v, v));
                     writer.update_lru_tail(&entry_ptr);
                     if v < BUCKET_LEN {
                         assert_eq!(
@@ -1452,11 +1449,10 @@ mod test {
                 unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = Bucket::new();
             for v in 0..xs {
-                let guard = Guard::new();
                 let writer = Writer::lock_sync(&bucket).unwrap();
                 let evicted = writer.evict_lru_head(data_block_ptr);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
-                let mut entry_ptr = writer.insert(data_block_ptr, 0, (v, v), &guard);
+                let mut entry_ptr = writer.insert(data_block_ptr, 0, (v, v));
                 writer.update_lru_tail(&entry_ptr);
                 assert_eq!(
                     writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize,
@@ -1496,9 +1492,8 @@ mod test {
                 unsafe { NonNull::new_unchecked(from_ref(&data_block).cast_mut()) };
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = Bucket::new();
             for v in 0..xs {
-                let guard = Guard::new();
                 let writer = Writer::lock_sync(&bucket).unwrap();
-                let entry_ptr = writer.insert(data_block_ptr, 0, (v, v), &guard);
+                let entry_ptr = writer.insert(data_block_ptr, 0, (v, v));
                 writer.update_lru_tail(&entry_ptr);
                 let mut iterated = 1;
                 let mut i = writer.lru_list.read(entry_ptr.index).1 as usize;
@@ -1561,7 +1556,7 @@ mod test {
                     if i == 0 {
                         assert!(
                             writer
-                                .insert(data_block_ptr, partial_hash, (task_id, 0), &guard)
+                                .insert(data_block_ptr, partial_hash, (task_id, 0))
                                 .is_valid()
                         );
                     } else {
