@@ -3,6 +3,12 @@
 
 ## Version 3
 
+3.4.4
+
+* Minor `Future` size improvement.
+* Simplify `HashIndex` entry removal policies.
+* Optimize `HashIndex` for `!needs_drop::<(K, V)>()`.
+
 3.4.3
 
 * Maximum capacity limit is adjusted to `2^(usize::BITS - 2)`.

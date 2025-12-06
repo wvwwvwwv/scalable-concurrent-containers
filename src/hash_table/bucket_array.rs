@@ -1,5 +1,5 @@
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
-use std::mem::{align_of, size_of};
+use std::mem::{align_of, needs_drop, size_of};
 use std::panic::UnwindSafe;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
@@ -199,7 +199,8 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
             }
         }
 
-        let num_cleared_buckets = if TYPE == INDEX {
+        let num_cleared_buckets = if TYPE == INDEX && needs_drop::<(K, V)>() {
+            // Removed entries in non-overflow buckets are neither relocated nor dropped.
             0
         } else {
             self.num_cleared_buckets.load(Relaxed)
