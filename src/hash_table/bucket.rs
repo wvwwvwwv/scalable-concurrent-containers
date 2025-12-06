@@ -313,20 +313,20 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Reserves memory for additional entries.
     #[inline]
-    pub(crate) fn reserve_slots(&self, additional: usize, guard: &Guard) {
+    pub(crate) fn reserve_slots(&self, additional: usize) {
         debug_assert!(self.rw_lock.is_locked(Relaxed));
 
         let mut capacity =
             BUCKET_LEN - self.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
         if capacity < additional {
-            let mut link_ptr = self.metadata.load_link(guard);
+            let mut link_ptr = self.metadata.load_link(fake_guard());
             while let Some(link) = link_ref(link_ptr) {
                 capacity += LINKED_BUCKET_LEN
                     - link.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
                 if capacity >= additional {
                     return;
                 }
-                let mut next_link_ptr = link.metadata.load_link(guard);
+                let mut next_link_ptr = link.metadata.load_link(fake_guard());
                 if next_link_ptr.is_null() {
                     let new_link = unsafe { Shared::new_unchecked(LinkedBucket::new(None)) };
                     new_link.prev_link.store(link_ptr.cast_mut(), Relaxed);

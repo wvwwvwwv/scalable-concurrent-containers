@@ -1117,7 +1117,7 @@ where
         for (i, d) in dist.iter().chain(extended_dist.iter()).enumerate() {
             if *d != 0 {
                 let bucket = current_array.bucket(target_index + i);
-                bucket.reserve_slots((*d) as usize, guard);
+                bucket.reserve_slots((*d) as usize);
             }
         }
 
