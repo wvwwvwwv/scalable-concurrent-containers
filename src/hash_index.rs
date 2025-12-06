@@ -309,8 +309,7 @@ where
     #[inline]
     pub fn entry_sync(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
-        let guard = Guard::new();
-        let locked_bucket = self.writer_sync(hash, &guard);
+        let locked_bucket = self.writer_sync(hash);
         let entry_ptr = locked_bucket.search(&key, hash);
         if entry_ptr.is_valid() {
             Entry::Occupied(OccupiedEntry {
@@ -545,8 +544,7 @@ where
     pub fn insert_sync(&self, key: K, val: V) -> Result<(), (K, V)> {
         self.reclaim_memory();
         let hash = self.hash(&key);
-        let guard = Guard::new();
-        let locked_bucket = self.writer_sync(hash, &guard);
+        let locked_bucket = self.writer_sync(hash);
         if locked_bucket.search(&key, hash).is_valid() {
             Err((key, val))
         } else {
@@ -665,8 +663,7 @@ where
     {
         self.reclaim_memory();
         let hash = self.hash(key);
-        let guard = Guard::new();
-        let Some(mut locked_bucket) = self.optional_writer_sync(hash, &guard) else {
+        let Some(mut locked_bucket) = self.optional_writer_sync(hash) else {
             return false;
         };
         let mut entry_ptr = locked_bucket.search(key, hash);
@@ -739,8 +736,7 @@ where
     {
         self.reclaim_memory();
         let hash = self.hash(key);
-        let guard = Guard::new();
-        let locked_bucket = self.optional_writer_sync(hash, &guard)?;
+        let locked_bucket = self.optional_writer_sync(hash)?;
         let entry_ptr = locked_bucket.search(key, hash);
         if entry_ptr.is_valid() {
             return Some(OccupiedEntry {

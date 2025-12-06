@@ -421,16 +421,16 @@ where
     ///
     /// If the container is empty, a new bucket array is allocated.
     #[inline]
-    fn writer_sync(&self, hash: u64, guard: &Guard) -> LockedBucket<K, V, L, TYPE> {
-        if let Some(locked_bucket) = self.try_optional_writer::<true>(hash, guard) {
+    fn writer_sync(&self, hash: u64) -> LockedBucket<K, V, L, TYPE> {
+        let guard = Guard::new();
+        if let Some(locked_bucket) = self.try_optional_writer::<true>(hash, &guard) {
             return locked_bucket;
         }
-
         loop {
-            let current_array = self.get_or_create_bucket_array(guard);
+            let current_array = self.get_or_create_bucket_array(&guard);
             let bucket_index = current_array.bucket_index(hash);
-            if let Some(old_array) = current_array.linked_array(guard) {
-                self.incremental_rehash_sync::<false>(current_array, guard);
+            if let Some(old_array) = current_array.linked_array(&guard) {
+                self.incremental_rehash_sync::<false>(current_array, &guard);
                 self.dedup_bucket_sync::<false>(current_array, old_array, bucket_index);
             }
 
@@ -439,7 +439,7 @@ where
                 && bucket.len() >= BUCKET_LEN - 1
                 && current_array.initiate_sampling(hash)
             {
-                self.try_enlarge(current_array, bucket_index, bucket.len(), guard);
+                self.try_enlarge(current_array, bucket_index, bucket.len(), &guard);
             }
 
             if let Some(writer) = Writer::lock_sync(bucket) {
@@ -497,19 +497,15 @@ where
     ///
     /// If the container is empty, `None` is returned.
     #[inline]
-    fn optional_writer_sync(
-        &self,
-        hash: u64,
-        guard: &Guard,
-    ) -> Option<LockedBucket<K, V, L, TYPE>> {
-        if let Some(locked_bucket) = self.try_optional_writer::<false>(hash, guard) {
+    fn optional_writer_sync(&self, hash: u64) -> Option<LockedBucket<K, V, L, TYPE>> {
+        let guard = Guard::new();
+        if let Some(locked_bucket) = self.try_optional_writer::<false>(hash, &guard) {
             return Some(locked_bucket);
         }
-
-        while let Some(current_array) = self.bucket_array(guard) {
+        while let Some(current_array) = self.bucket_array(&guard) {
             let bucket_index = current_array.bucket_index(hash);
-            if let Some(old_array) = current_array.linked_array(guard) {
-                self.incremental_rehash_sync::<false>(current_array, guard);
+            if let Some(old_array) = current_array.linked_array(&guard) {
+                self.incremental_rehash_sync::<false>(current_array, &guard);
                 self.dedup_bucket_sync::<false>(current_array, old_array, bucket_index);
             }
 

@@ -259,8 +259,7 @@ where
     #[inline]
     pub fn entry_sync(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
-        let guard = Guard::new();
-        let locked_bucket = self.writer_sync(hash, &guard);
+        let locked_bucket = self.writer_sync(hash);
         let entry_ptr = locked_bucket.search(&key, hash);
         if entry_ptr.is_valid() {
             Entry::Occupied(OccupiedEntry {
@@ -374,8 +373,7 @@ where
     #[inline]
     pub fn put_sync(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
         let hash = self.hash(&key);
-        let guard = Guard::new();
-        let locked_bucket = self.writer_sync(hash, &guard);
+        let locked_bucket = self.writer_sync(hash);
         let entry_ptr = locked_bucket.search(&key, hash);
         if entry_ptr.is_valid() {
             Err((key, val))
@@ -508,8 +506,7 @@ where
     #[inline]
     pub fn replace_sync(&self, key: K) -> ReplaceResult<'_, K, V, H> {
         let hash = self.hash(&key);
-        let guard = Guard::new();
-        let locked_bucket = self.writer_sync(hash, &guard);
+        let locked_bucket = self.writer_sync(hash);
         let mut entry_ptr = locked_bucket.search(&key, hash);
         if entry_ptr.is_valid() {
             let prev_key = replace(
@@ -642,8 +639,7 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
-        let guard = Guard::new();
-        let locked_bucket = self.optional_writer_sync(hash, &guard)?;
+        let locked_bucket = self.optional_writer_sync(hash)?;
         let entry_ptr = locked_bucket.search(key, hash);
         if entry_ptr.is_valid() {
             locked_bucket.writer.update_lru_tail(&entry_ptr);
@@ -797,8 +793,7 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
-        let guard = Guard::default();
-        let mut locked_bucket = self.optional_writer_sync(hash, &guard)?;
+        let mut locked_bucket = self.optional_writer_sync(hash)?;
         let mut entry_ptr = locked_bucket.search(key, hash);
         if entry_ptr.is_valid() && condition(&mut locked_bucket.entry_mut(&mut entry_ptr).1) {
             Some(locked_bucket.remove(self, &mut entry_ptr))

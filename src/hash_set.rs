@@ -8,8 +8,6 @@ use std::hash::{BuildHasher, Hash};
 use std::mem::swap;
 use std::ops::{Deref, RangeInclusive};
 
-use sdd::Guard;
-
 use super::hash_map;
 use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
@@ -271,8 +269,7 @@ where
     #[inline]
     pub fn replace_sync(&self, mut key: K) -> Option<K> {
         let hash = self.map.hash(&key);
-        let guard = Guard::new();
-        let mut locked_bucket = self.map.writer_sync(hash, &guard);
+        let mut locked_bucket = self.map.writer_sync(hash);
         let mut entry_ptr = locked_bucket.search(&key, hash);
         if entry_ptr.is_valid() {
             let k = &mut locked_bucket.entry_mut(&mut entry_ptr).0;
