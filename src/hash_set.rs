@@ -27,8 +27,8 @@ where
 
 /// [`ConsumableEntry`] is a view into an occupied entry in a [`HashSet`] when iterating over
 /// entries in it.
-pub struct ConsumableEntry<'w, 'g: 'w, K> {
-    consumable: hash_map::ConsumableEntry<'w, 'g, K, ()>,
+pub struct ConsumableEntry<'w, K> {
+    consumable: hash_map::ConsumableEntry<'w, K, ()>,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashSet`] higher than a certain level.
@@ -547,10 +547,7 @@ where
     /// };
     /// ```
     #[inline]
-    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, '_, K>) -> bool>(
-        &self,
-        mut f: F,
-    ) -> bool {
+    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
         self.map
             .iter_mut_async(|consumable| f(ConsumableEntry { consumable }))
             .await
@@ -585,7 +582,7 @@ where
     /// assert_eq!(hashset.len(), 2);
     /// ```
     #[inline]
-    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, '_, K>) -> bool>(&self, mut f: F) -> bool {
+    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
         self.map
             .iter_mut_sync(|consumable| f(ConsumableEntry { consumable }))
     }
@@ -912,7 +909,7 @@ where
     }
 }
 
-impl<K> ConsumableEntry<'_, '_, K> {
+impl<K> ConsumableEntry<'_, K> {
     /// Consumes the entry by moving out the key.
     ///
     /// # Examples
@@ -945,7 +942,7 @@ impl<K> ConsumableEntry<'_, '_, K> {
     }
 }
 
-impl<K> Deref for ConsumableEntry<'_, '_, K> {
+impl<K> Deref for ConsumableEntry<'_, K> {
     type Target = K;
 
     #[inline]

@@ -1068,7 +1068,7 @@ where
         let pre_allocate_slots =
             old_array.len() > current_array.len() || old_writer.len() > BUCKET_LEN;
         let old_data_block = old_array.data_block(old_index);
-        let mut entry_ptr = EntryPtr::new(guard);
+        let mut entry_ptr = EntryPtr::null();
         let mut position = 0;
         let mut dist = [0_u32; 8];
         let mut extended_dist: Vec<u32> = Vec::new();
@@ -1079,7 +1079,7 @@ where
             let (offset, hash) = if old_array.len() >= current_array.len() {
                 (0, u64::from(entry_ptr.partial_hash(&**old_writer)))
             } else {
-                let hash = self.hash(&entry_ptr.get(old_data_block).0);
+                let hash = self.hash(&entry_ptr.get(old_data_block, guard).0);
                 let new_index = current_array.bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
                 (new_index - target_index, hash)
@@ -1123,13 +1123,13 @@ where
         }
 
         // Relocate entries; it is infallible.
-        entry_ptr = EntryPtr::new(guard);
+        entry_ptr = EntryPtr::null();
         position = 0;
         while entry_ptr.move_to_next(old_writer, guard) {
             let hash = if old_array.len() >= current_array.len() {
                 u64::from(entry_ptr.partial_hash(&**old_writer))
             } else if position == BUCKET_LEN {
-                self.hash(&entry_ptr.get(old_data_block).0)
+                self.hash(&entry_ptr.get(old_data_block, guard).0)
             } else {
                 position += 1;
                 hash_data[position - 1]
@@ -1556,30 +1556,22 @@ impl<K, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> {
 
     /// Gets a mutable reference to the entry.
     #[inline]
-    pub(crate) fn entry<'b, 'g: 'b>(
-        &'b self,
-        entry_ptr: &'b EntryPtr<'g, K, V, TYPE>,
-    ) -> &'b (K, V) {
-        entry_ptr.get(self.data_block)
+    pub(crate) fn entry(&self, entry_ptr: &EntryPtr<K, V, TYPE>) -> &(K, V) {
+        entry_ptr.get(self.data_block, fake_guard())
     }
 
     /// Gets a mutable reference to the entry.
     #[inline]
-    pub(crate) fn entry_mut<'b, 'g: 'b>(
+    pub(crate) fn entry_mut<'b>(
         &'b mut self,
-        entry_ptr: &'b mut EntryPtr<'g, K, V, TYPE>,
+        entry_ptr: &'b mut EntryPtr<K, V, TYPE>,
     ) -> &'b mut (K, V) {
         entry_ptr.get_mut(self.data_block, &self.writer)
     }
 
     /// Inserts a new entry with the supplied constructor function.
     #[inline]
-    pub(crate) fn insert<'g>(
-        &self,
-        hash: u64,
-        entry: (K, V),
-        guard: &'g Guard,
-    ) -> EntryPtr<'g, K, V, TYPE> {
+    pub(crate) fn insert(&self, hash: u64, entry: (K, V), guard: &Guard) -> EntryPtr<K, V, TYPE> {
         if TYPE == INDEX {
             self.writer
                 .try_drop_unreachable_entries(self.data_block, guard);
@@ -1591,12 +1583,7 @@ impl<K, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> {
 impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> {
     /// Searches for an entry with the given key.
     #[inline]
-    pub(crate) fn search<'g, Q>(
-        &self,
-        key: &Q,
-        hash: u64,
-        guard: &'g Guard,
-    ) -> EntryPtr<'g, K, V, TYPE>
+    pub(crate) fn search<Q>(&self, key: &Q, hash: u64, guard: &Guard) -> EntryPtr<K, V, TYPE>
     where
         Q: Equivalent<K> + ?Sized,
     {
@@ -1605,29 +1592,29 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
 
     /// Removes the entry and tries to shrink the container.
     #[inline]
-    pub(crate) fn remove<'g, H, T: HashTable<K, V, H, L, TYPE>>(
+    pub(crate) fn remove<H, T: HashTable<K, V, H, L, TYPE>>(
         self,
         hash_table: &T,
-        entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
-        guard: &'g Guard,
+        entry_ptr: &mut EntryPtr<K, V, TYPE>,
+        guard: &Guard,
     ) -> (K, V)
     where
         H: BuildHasher,
     {
         debug_assert!(!ptr::eq(guard, fake_guard()));
 
-        let removed = self.writer.remove(self.data_block, entry_ptr, guard);
+        let removed = self.writer.remove(self.data_block, entry_ptr);
         self.try_shrink_or_rebuild(hash_table, guard);
         removed
     }
 
     /// Removes the entry and tries to shrink or rebuild the container.
     #[inline]
-    pub(crate) fn mark_removed<'g, H, T: HashTable<K, V, H, L, TYPE>>(
+    pub(crate) fn mark_removed<H, T: HashTable<K, V, H, L, TYPE>>(
         self,
         hash_table: &T,
-        entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
-        guard: &'g Guard,
+        entry_ptr: &mut EntryPtr<K, V, TYPE>,
+        guard: &Guard,
     ) where
         H: BuildHasher,
     {
@@ -1667,10 +1654,10 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
 
     /// Returns a [`LockedBucket`] owning the next bucket asynchronously.
     #[inline]
-    pub(super) async fn next_async<'h, H, T: HashTable<K, V, H, L, TYPE>>(
+    pub(super) async fn next_async<H, T: HashTable<K, V, H, L, TYPE>>(
         self,
-        hash_table: &'h T,
-        entry_ptr: &mut EntryPtr<'h, K, V, TYPE>,
+        hash_table: &T,
+        entry_ptr: &mut EntryPtr<K, V, TYPE>,
     ) -> Option<LockedBucket<K, V, L, TYPE>>
     where
         H: BuildHasher,
@@ -1696,7 +1683,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         hash_table
             .for_each_writer_async(next_index, len, |locked_bucket, _| {
                 let fake_guard = fake_guard();
-                *entry_ptr = EntryPtr::new(fake_guard);
+                *entry_ptr = EntryPtr::null();
                 if entry_ptr.move_to_next(&locked_bucket.writer, fake_guard) {
                     next_entry = Some(locked_bucket);
                     return true;
@@ -1710,10 +1697,10 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
 
     /// Returns a [`LockedBucket`] owning the next bucket synchronously.
     #[inline]
-    pub(super) fn next_sync<'h, H, T: HashTable<K, V, H, L, TYPE>>(
+    pub(super) fn next_sync<H, T: HashTable<K, V, H, L, TYPE>>(
         self,
-        hash_table: &'h T,
-        entry_ptr: &mut EntryPtr<'h, K, V, TYPE>,
+        hash_table: &T,
+        entry_ptr: &mut EntryPtr<K, V, TYPE>,
     ) -> Option<Self>
     where
         H: BuildHasher,
@@ -1737,7 +1724,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
 
         let mut next_entry = None;
         hash_table.for_each_writer_sync(next_index, len, &Guard::new(), |locked_bucket, _| {
-            *entry_ptr = EntryPtr::new(fake_guard());
+            *entry_ptr = EntryPtr::null();
             if entry_ptr.move_to_next(&locked_bucket.writer, fake_guard()) {
                 next_entry = Some(locked_bucket);
                 return true;

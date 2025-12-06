@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.4.4
+
+* Minor `Future` size improvement.
+
 3.4.3
 
 * Maximum capacity limit is adjusted to `2^(usize::BITS - 2)`.

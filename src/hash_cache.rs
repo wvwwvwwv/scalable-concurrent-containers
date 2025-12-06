@@ -71,7 +71,7 @@ where
 {
     hashcache: &'h HashCache<K, V, H>,
     locked_bucket: LockedBucket<K, V, DoublyLinkedList, CACHE>,
-    entry_ptr: EntryPtr<'h, K, V, CACHE>,
+    entry_ptr: EntryPtr<K, V, CACHE>,
 }
 
 /// [`VacantEntry`] is a view into a vacant cache entry in a [`HashCache`].
@@ -87,15 +87,13 @@ where
 
 /// [`ConsumableEntry`] is a view into an occupied entry in a [`HashCache`] when iterating over
 /// entries in it.
-pub struct ConsumableEntry<'b, 'g: 'b, K, V> {
+pub struct ConsumableEntry<'b, K, V> {
     /// Holds an exclusive lock on the entry bucket.
     locked_bucket: &'b mut LockedBucket<K, V, DoublyLinkedList, CACHE>,
     /// Pointer to the entry.
-    entry_ptr: &'b mut EntryPtr<'g, K, V, CACHE>,
+    entry_ptr: &'b mut EntryPtr<K, V, CACHE>,
     /// Probes removal.
     remove_probe: &'b mut bool,
-    /// Associated [`Guard`].
-    guard: &'g Guard,
 }
 
 /// [`ReplaceResult`] is the result type of the [`HashCache::replace_async`] and
@@ -837,9 +835,9 @@ where
     pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         self.for_each_reader_async(|reader, data_block| {
-            let mut entry_ptr = EntryPtr::new(fake_guard());
+            let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&reader, fake_guard()) {
-                let (k, v) = entry_ptr.get(data_block);
+                let (k, v) = entry_ptr.get(data_block, fake_guard());
                 if !f(k, v) {
                     result = false;
                     return false;
@@ -880,9 +878,9 @@ where
         let mut result = true;
         let guard = Guard::new();
         self.for_each_reader_sync(&guard, |reader, data_block| {
-            let mut entry_ptr = EntryPtr::new(&guard);
+            let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&reader, &guard) {
-                let (k, v) = entry_ptr.get(data_block);
+                let (k, v) = entry_ptr.get(data_block, &guard);
                 if !f(k, v) {
                     result = false;
                     return false;
@@ -921,20 +919,19 @@ where
     /// };
     /// ```
     #[inline]
-    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(
+    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(
         &self,
         mut f: F,
     ) -> bool {
         let mut result = true;
         self.for_each_writer_async(0, 0, |mut locked_bucket, removed| {
             let guard = Guard::new();
-            let mut entry_ptr = EntryPtr::new(&guard);
+            let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&locked_bucket.writer, &guard) {
                 let consumable_entry = ConsumableEntry {
                     locked_bucket: &mut locked_bucket,
                     entry_ptr: &mut entry_ptr,
                     remove_probe: removed,
-                    guard: &guard,
                 };
                 if !f(consumable_entry) {
                     result = false;
@@ -975,17 +972,16 @@ where
     /// assert_eq!(hashcache.len(), 2);
     /// ```
     #[inline]
-    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(&self, mut f: F) -> bool {
+    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         let guard = Guard::new();
         self.for_each_writer_sync(0, 0, &guard, |mut locked_bucket, removed| {
-            let mut entry_ptr = EntryPtr::new(&guard);
+            let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&locked_bucket.writer, &guard) {
                 let consumable_entry = ConsumableEntry {
                     locked_bucket: &mut locked_bucket,
                     entry_ptr: &mut entry_ptr,
                     remove_probe: removed,
-                    guard: &guard,
                 };
                 if !f(consumable_entry) {
                     result = false;
@@ -1803,7 +1799,7 @@ where
     }
 }
 
-impl<K, V> ConsumableEntry<'_, '_, K, V> {
+impl<K, V> ConsumableEntry<'_, K, V> {
     /// Consumes the entry by moving out the key and value.
     ///
     /// # Examples
@@ -1835,11 +1831,11 @@ impl<K, V> ConsumableEntry<'_, '_, K, V> {
         *self.remove_probe |= true;
         self.locked_bucket
             .writer
-            .remove(self.locked_bucket.data_block, self.entry_ptr, self.guard)
+            .remove(self.locked_bucket.data_block, self.entry_ptr)
     }
 }
 
-impl<K, V> Deref for ConsumableEntry<'_, '_, K, V> {
+impl<K, V> Deref for ConsumableEntry<'_, K, V> {
     type Target = (K, V);
 
     #[inline]
@@ -1848,7 +1844,7 @@ impl<K, V> Deref for ConsumableEntry<'_, '_, K, V> {
     }
 }
 
-impl<K, V> DerefMut for ConsumableEntry<'_, '_, K, V> {
+impl<K, V> DerefMut for ConsumableEntry<'_, K, V> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.locked_bucket.entry_mut(self.entry_ptr)

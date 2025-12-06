@@ -75,7 +75,7 @@ where
 {
     hashindex: &'h HashIndex<K, V, H>,
     locked_bucket: LockedBucket<K, V, (), INDEX>,
-    entry_ptr: EntryPtr<'h, K, V, INDEX>,
+    entry_ptr: EntryPtr<K, V, INDEX>,
 }
 
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashIndex`].
@@ -112,7 +112,7 @@ where
     bucket_array: Option<&'h BucketArray<K, V, (), INDEX>>,
     index: usize,
     bucket: Option<&'h Bucket<K, V, (), INDEX>>,
-    entry_ptr: EntryPtr<'h, K, V, INDEX>,
+    entry_ptr: EntryPtr<K, V, INDEX>,
     guard: &'h Guard,
 }
 
@@ -433,7 +433,7 @@ where
         self.reclaim_memory();
         let mut entry = None;
         self.for_each_writer_async(0, 0, |locked_bucket, _| {
-            let mut entry_ptr = EntryPtr::new(fake_guard());
+            let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&locked_bucket.writer, fake_guard()) {
                 let (k, v) = locked_bucket.entry(&entry_ptr);
                 if pred(k, v) {
@@ -476,7 +476,7 @@ where
         let guard = Guard::new();
         let prolonged_guard = self.prolonged_guard_ref(&guard);
         self.for_each_writer_sync(0, 0, prolonged_guard, |locked_bucket, _| {
-            let mut entry_ptr = EntryPtr::new(prolonged_guard);
+            let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&locked_bucket.writer, prolonged_guard) {
                 let (k, v) = locked_bucket.entry(&entry_ptr);
                 if pred(k, v) {
@@ -877,9 +877,9 @@ where
         self.reclaim_memory();
         let mut result = true;
         self.for_each_reader_async(|reader, data_block| {
-            let mut entry_ptr = EntryPtr::new(fake_guard());
+            let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&reader, fake_guard()) {
-                let (k, v) = entry_ptr.get(data_block);
+                let (k, v) = entry_ptr.get(data_block, fake_guard());
                 if !f(k, v) {
                     result = false;
                     return false;
@@ -921,9 +921,9 @@ where
         let mut result = true;
         let guard = Guard::new();
         self.for_each_reader_sync(&guard, |reader, data_block| {
-            let mut entry_ptr = EntryPtr::new(&guard);
+            let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&reader, &guard) {
-                let (k, v) = entry_ptr.get(data_block);
+                let (k, v) = entry_ptr.get(data_block, &guard);
                 if !f(k, v) {
                     result = false;
                     return false;
@@ -954,7 +954,7 @@ where
     pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
         self.reclaim_memory();
         self.for_each_writer_async(0, 0, |mut locked_bucket, removed| {
-            let mut entry_ptr = EntryPtr::new(fake_guard());
+            let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&locked_bucket.writer, fake_guard()) {
                 let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
                 if !pred(k, v) {
@@ -997,7 +997,7 @@ where
         self.reclaim_memory();
         let guard = Guard::new();
         self.for_each_writer_sync(0, 0, &guard, |mut locked_bucket, removed| {
-            let mut entry_ptr = EntryPtr::new(&guard);
+            let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&locked_bucket.writer, &guard) {
                 let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
                 if !pred(k, v) {
@@ -1179,7 +1179,7 @@ where
             bucket_array: None,
             index: 0,
             bucket: None,
-            entry_ptr: EntryPtr::new(guard),
+            entry_ptr: EntryPtr::null(),
             guard,
         }
     }
@@ -2126,12 +2126,12 @@ where
             if let Some(bucket) = self.bucket.take() {
                 // Move to the next entry in the bucket.
                 if self.entry_ptr.move_to_next(bucket, self.guard) {
-                    let (k, v) = self.entry_ptr.get(array.data_block(self.index));
+                    let (k, v) = self.entry_ptr.get(array.data_block(self.index), self.guard);
                     self.bucket.replace(bucket);
                     return Some((k, v));
                 }
             }
-            self.entry_ptr = EntryPtr::new(self.guard);
+            self.entry_ptr = EntryPtr::null();
 
             if self.index + 1 == array.len() {
                 // Move to a newer bucket array.
