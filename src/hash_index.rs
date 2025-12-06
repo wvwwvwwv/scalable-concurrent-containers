@@ -17,7 +17,6 @@ use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Epoch, Guard, Shared, Tag};
 
 use super::Equivalent;
-use super::async_helper::fake_guard;
 use super::hash_table::bucket::{Bucket, EntryPtr, INDEX};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedBucket};
@@ -871,7 +870,7 @@ where
         self.for_each_reader_async(|reader, data_block| {
             let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&reader) {
-                let (k, v) = entry_ptr.get(data_block, fake_guard());
+                let (k, v) = entry_ptr.get(data_block);
                 if !f(k, v) {
                     result = false;
                     return false;
@@ -915,7 +914,7 @@ where
         self.for_each_reader_sync(&guard, |reader, data_block| {
             let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&reader) {
-                let (k, v) = entry_ptr.get(data_block, &guard);
+                let (k, v) = entry_ptr.get(data_block);
                 if !f(k, v) {
                     result = false;
                     return false;
@@ -1177,8 +1176,7 @@ where
     /// Reclaims memory by dropping all garbage bucket arrays if they are unreachable.
     #[inline]
     fn reclaim_memory(&self) {
-        let head_ptr = self.garbage_chain.load(Acquire, fake_guard());
-        if !head_ptr.is_null() {
+        if !self.garbage_chain.is_null(Acquire) {
             self.dealloc_garbage();
         }
     }
@@ -2100,7 +2098,7 @@ where
             if let Some(bucket) = self.bucket.take() {
                 // Move to the next entry in the bucket.
                 if self.entry_ptr.move_to_next(bucket) {
-                    let (k, v) = self.entry_ptr.get(array.data_block(self.index), self.guard);
+                    let (k, v) = self.entry_ptr.get(array.data_block(self.index));
                     self.bucket.replace(bucket);
                     return Some((k, v));
                 }

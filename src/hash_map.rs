@@ -14,7 +14,6 @@ use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Guard, Shared, Tag};
 
 use super::Equivalent;
-use super::async_helper::fake_guard;
 use super::hash_table::bucket::{EntryPtr, MAP};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedBucket};
@@ -1125,7 +1124,7 @@ where
         self.for_each_reader_async(|reader, data_block| {
             let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&reader) {
-                let (k, v) = entry_ptr.get(data_block, fake_guard());
+                let (k, v) = entry_ptr.get(data_block);
                 if !f(k, v) {
                     result = false;
                     return false;
@@ -1168,7 +1167,7 @@ where
         self.for_each_reader_sync(&guard, |reader, data_block| {
             let mut entry_ptr = EntryPtr::null();
             while entry_ptr.move_to_next(&reader) {
-                let (k, v) = entry_ptr.get(data_block, &guard);
+                let (k, v) = entry_ptr.get(data_block);
                 if !f(k, v) {
                     result = false;
                     return false;

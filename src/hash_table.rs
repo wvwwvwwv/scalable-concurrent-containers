@@ -18,7 +18,7 @@ use loom::sync::atomic::AtomicUsize;
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
-use super::async_helper::{AsyncGuard, fake_guard};
+use super::async_helper::AsyncGuard;
 use super::exit_guard::ExitGuard;
 use super::hash_table::bucket::Bucket;
 
@@ -256,23 +256,21 @@ where
             if let Some(old_array) = current_array.linked_array(guard) {
                 self.incremental_rehash_sync::<true>(current_array, guard);
                 let index = old_array.bucket_index(hash);
-                if let Some(entry) = old_array.bucket(index).search_entry(
-                    old_array.data_block(index),
-                    key,
-                    hash,
-                    guard,
-                ) {
+                if let Some(entry) =
+                    old_array
+                        .bucket(index)
+                        .search_entry(old_array.data_block(index), key, hash)
+                {
                     return Some(entry);
                 }
             }
 
             let index = current_array.bucket_index(hash);
-            if let Some(entry) = current_array.bucket(index).search_entry(
-                current_array.data_block(index),
-                key,
-                hash,
-                guard,
-            ) {
+            if let Some(entry) =
+                current_array
+                    .bucket(index)
+                    .search_entry(current_array.data_block(index), key, hash)
+            {
                 return Some(entry);
             }
 
@@ -314,22 +312,16 @@ where
             let bucket_index = current_array.bucket_index(hash);
             let bucket = current_array.bucket(bucket_index);
             if let Some(reader) = Reader::try_lock(bucket) {
-                if let Some(entry) = reader.search_entry(
-                    current_array.data_block(bucket_index),
-                    key,
-                    hash,
-                    async_guard.guard(),
-                ) {
+                if let Some(entry) =
+                    reader.search_entry(current_array.data_block(bucket_index), key, hash)
+                {
                     return Some(f(&entry.0, &entry.1));
                 }
                 break;
             } else if let Some(reader) = Reader::lock_async(bucket, &async_guard).await {
-                if let Some(entry) = reader.search_entry(
-                    current_array.data_block(bucket_index),
-                    key,
-                    hash,
-                    async_guard.guard(),
-                ) {
+                if let Some(entry) =
+                    reader.search_entry(current_array.data_block(bucket_index), key, hash)
+                {
                     return Some(f(&entry.0, &entry.1));
                 }
                 break;
@@ -356,8 +348,7 @@ where
 
             let bucket = current_array.bucket(index);
             if let Some(reader) = Reader::lock_sync(bucket) {
-                if let Some(entry) =
-                    reader.search_entry(current_array.data_block(index), key, hash, &guard)
+                if let Some(entry) = reader.search_entry(current_array.data_block(index), key, hash)
                 {
                     return Some(f(&entry.0, &entry.1));
                 }
@@ -1112,7 +1103,7 @@ where
             let hash = if old_array.len() >= current_array.len() {
                 u64::from(entry_ptr.partial_hash(&**old_writer))
             } else if position == BUCKET_LEN {
-                self.hash(&entry_ptr.get(old_data_block, fake_guard()).0)
+                self.hash(&entry_ptr.get(old_data_block).0)
             } else {
                 position += 1;
                 hash_data[position - 1]
@@ -1531,7 +1522,7 @@ impl<K, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> {
     /// Gets a mutable reference to the entry.
     #[inline]
     pub(crate) fn entry(&self, entry_ptr: &EntryPtr<K, V, TYPE>) -> &(K, V) {
-        entry_ptr.get(self.data_block, fake_guard())
+        entry_ptr.get(self.data_block)
     }
 
     /// Gets a mutable reference to the entry.

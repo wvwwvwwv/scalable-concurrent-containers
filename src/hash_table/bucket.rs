@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize};
 
 use saa::Lock;
-use sdd::{AtomicShared, Guard, Shared, Tag};
+use sdd::{AtomicShared, Shared, Tag};
 
 use crate::Equivalent;
 use crate::async_helper::{AsyncGuard, fake_guard};
@@ -157,7 +157,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         hash: u64,
         entry: (K, V),
     ) -> EntryPtr<K, V, TYPE> {
-        let len = self.len.load(Relaxed);
         let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
         let free_index = occupied_bitmap.trailing_ones() as usize;
         if free_index == BUCKET_LEN {
@@ -171,7 +170,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 hash,
                 entry,
             );
-            self.len.store(len + 1, Relaxed);
+            self.len.store(self.len.load(Relaxed) + 1, Relaxed);
             EntryPtr {
                 link_ptr: ptr::null(),
                 index: free_index,
@@ -311,14 +310,14 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let mut capacity =
             BUCKET_LEN - self.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
         if capacity < additional {
-            let mut link_ptr = self.metadata.load_link(fake_guard());
+            let mut link_ptr = self.metadata.load_link();
             while let Some(link) = link_ref(link_ptr) {
                 capacity += LINKED_BUCKET_LEN
                     - link.metadata.occupied_bitmap.load(Relaxed).count_ones() as usize;
                 if capacity >= additional {
                     return;
                 }
-                let mut next_link_ptr = link.metadata.load_link(fake_guard());
+                let mut next_link_ptr = link.metadata.load_link();
                 if next_link_ptr.is_null() {
                     let new_link = unsafe { Shared::new_unchecked(LinkedBucket::new(None)) };
                     new_link.prev_link.store(link_ptr.cast_mut(), Relaxed);
@@ -400,7 +399,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// inserts an entry into the linked list.
     fn insert_overflow(&self, hash: u64, entry: (K, V)) -> EntryPtr<K, V, TYPE> {
-        let mut link_ptr = self.metadata.load_link(fake_guard());
+        let mut link_ptr = self.metadata.load_link();
         while let Some(link) = link_ref(link_ptr) {
             let occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
             let free_index = occupied_bitmap.trailing_ones() as usize;
@@ -420,7 +419,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                     index: free_index,
                 };
             }
-            link_ptr = link.metadata.load_link(fake_guard());
+            link_ptr = link.metadata.load_link();
         }
 
         // Insert a new `LinkedBucket` at the linked list head.
@@ -433,7 +432,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             *h = Self::partial_hash(hash);
         });
         link.metadata.occupied_bitmap.store(1, Relaxed);
-        if let Some(head) = link_ref(link.metadata.load_link(fake_guard())) {
+        if let Some(head) = link_ref(link.metadata.load_link()) {
             head.prev_link.store(link.as_ptr().cast_mut(), Relaxed);
         }
         let link_ptr = link.as_ptr();
@@ -553,7 +552,6 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
         key: &Q,
         hash: u64,
-        guard: &'g Guard,
     ) -> Option<&'g (K, V)>
     where
         Q: Equivalent<K> + ?Sized,
@@ -565,14 +563,14 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 return Some(entry);
             }
 
-            let mut link_ptr = self.metadata.load_link(guard);
+            let mut link_ptr = self.metadata.load_link();
             while let Some(link) = link_ref(link_ptr) {
                 if let Some((entry, _)) =
                     Self::search_data_block(&link.metadata, &link.data_block, key, hash)
                 {
                     return Some(entry);
                 }
-                link_ptr = link.metadata.load_link(guard);
+                link_ptr = link.metadata.load_link();
             }
         }
 
@@ -602,7 +600,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 };
             }
 
-            let mut current_link_ptr = self.metadata.load_link(fake_guard());
+            let mut current_link_ptr = self.metadata.load_link();
             while let Some(link) = link_ref(current_link_ptr) {
                 if let Some((_, index)) =
                     Self::search_data_block(&link.metadata, &link.data_block, key, hash)
@@ -612,7 +610,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                         index,
                     };
                 }
-                current_link_ptr = link.metadata.load_link(fake_guard());
+                current_link_ptr = link.metadata.load_link();
             }
         }
         EntryPtr::null()
@@ -867,6 +865,18 @@ impl<K, V, const TYPE: char> EntryPtr<K, V, TYPE> {
         self.index != BUCKET_LEN
     }
 
+    /// Gets the partial hash value of the entry.
+    ///
+    /// The [`EntryPtr`] must point to a valid entry.
+    #[inline]
+    pub(crate) const fn partial_hash<L: LruList>(&self, bucket: &Bucket<K, V, L, TYPE>) -> u8 {
+        if let Some(link) = link_ref(self.link_ptr) {
+            *Bucket::<K, V, L, TYPE>::read_cell(&link.metadata.partial_hash_array[self.index])
+        } else {
+            *Bucket::<K, V, L, TYPE>::read_cell(&bucket.metadata.partial_hash_array[self.index])
+        }
+    }
+
     /// Moves the [`EntryPtr`] to point to the next occupied entry.
     ///
     /// Returns `true` if it successfully found the next occupied entry.
@@ -893,11 +903,7 @@ impl<K, V, const TYPE: char> EntryPtr<K, V, TYPE> {
     ///
     /// The [`EntryPtr`] must point to a valid entry.
     #[inline]
-    pub(crate) fn get<'g>(
-        &self,
-        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
-        _guard: &'g Guard,
-    ) -> &'g (K, V) {
+    pub(crate) fn get<'e>(&self, data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>) -> &'e (K, V) {
         debug_assert_ne!(self.index, usize::MAX);
 
         let entry_ptr = if let Some(link) = link_ref(self.link_ptr) {
@@ -925,20 +931,6 @@ impl<K, V, const TYPE: char> EntryPtr<K, V, TYPE> {
             Bucket::<K, V, L, TYPE>::entry_mut_ptr(unsafe { data_block.as_ref() }, self.index)
         };
         unsafe { &mut (*entry_ptr) }
-    }
-
-    /// Gets the partial hash value of the entry.
-    ///
-    /// The [`EntryPtr`] must point to a valid entry.
-    #[inline]
-    pub(crate) fn partial_hash<L: LruList>(&self, bucket: &Bucket<K, V, L, TYPE>) -> u8 {
-        debug_assert_ne!(self.index, usize::MAX);
-
-        if let Some(link) = link_ref(self.link_ptr) {
-            *Bucket::<K, V, L, TYPE>::read_cell(&link.metadata.partial_hash_array[self.index])
-        } else {
-            *Bucket::<K, V, L, TYPE>::read_cell(&bucket.metadata.partial_hash_array[self.index])
-        }
     }
 
     /// Unlinks the [`LinkedBucket`] currently pointed to by this [`EntryPtr`] from the linked list.
@@ -996,7 +988,7 @@ impl<K, V, const TYPE: char> EntryPtr<K, V, TYPE> {
             }
         }
 
-        self.link_ptr = metadata.load_link(fake_guard());
+        self.link_ptr = metadata.load_link();
         self.index = LINKED_BUCKET_LEN;
 
         false
@@ -1178,8 +1170,8 @@ unsafe impl Sync for DoublyLinkedList {}
 impl<K, V, const LEN: usize> Metadata<K, V, LEN> {
     /// Loads the linked bucket pointer.
     #[inline]
-    fn load_link(&self, guard: &Guard) -> *const LinkedBucket<K, V> {
-        unsafe { self.link.load(Acquire, guard).as_ptr_unchecked() }
+    fn load_link(&self) -> *const LinkedBucket<K, V> {
+        unsafe { self.link.load(Acquire, fake_guard()).as_ptr_unchecked() }
     }
 }
 
@@ -1247,7 +1239,7 @@ mod test {
     use std::sync::atomic::Ordering::Relaxed;
 
     use proptest::prelude::*;
-    use sdd::{Guard, Shared};
+    use sdd::Shared;
     use tokio::sync::Barrier;
 
     #[cfg(not(miri))]
@@ -1419,7 +1411,6 @@ mod test {
             task_handles.push(tokio::spawn(async move {
                 barrier_clone.wait().await;
                 let partial_hash = (task_id % BUCKET_LEN).try_into().unwrap();
-                let guard = Guard::new();
                 for i in 0..2048 {
                     let writer = Writer::lock_sync(&bucket_clone).unwrap();
                     let mut sum: u64 = 0;
@@ -1441,7 +1432,7 @@ mod test {
                     } else {
                         assert_eq!(
                             writer
-                                .search_entry(data_block_ptr, &task_id, partial_hash, &guard)
+                                .search_entry(data_block_ptr, &task_id, partial_hash)
                                 .unwrap(),
                             &(task_id, 0_usize)
                         );
@@ -1451,7 +1442,7 @@ mod test {
                     let reader = Reader::lock_sync(&*bucket_clone).unwrap();
                     assert_eq!(
                         reader
-                            .search_entry(data_block_ptr, &task_id, partial_hash, &guard)
+                            .search_entry(data_block_ptr, &task_id, partial_hash)
                             .unwrap(),
                         &(task_id, 0_usize)
                     );
@@ -1466,7 +1457,6 @@ mod test {
         assert_eq!(sum % 256, 0);
         assert_eq!(bucket.len(), num_tasks);
 
-        let guard = Guard::new();
         let data_block_ptr = unsafe { NonNull::new_unchecked(data_block.as_ptr().cast_mut()) };
         for task_id in 0..num_tasks {
             assert_eq!(
@@ -1474,7 +1464,6 @@ mod test {
                     data_block_ptr,
                     &task_id,
                     (task_id % BUCKET_LEN).try_into().unwrap(),
-                    &guard
                 ),
                 Some(&(task_id, 0))
             );

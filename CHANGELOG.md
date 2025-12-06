@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.4.5
+
+* Minor `Hash*` performance improvements.
+
 3.4.4
 
 * Minor `Future` size improvement.
