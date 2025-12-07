@@ -1294,8 +1294,8 @@ where
         guard: &Guard,
     ) {
         if !current_array.has_linked_array() {
-            // Try to grow if the estimated load factor is greater than `25/32`.
-            let threshold = current_array.sample_size() * (BUCKET_LEN / 32) * 25;
+            // Try to grow if the estimated load factor is greater than `13/16`.
+            let threshold = current_array.sample_size() * (BUCKET_LEN / 16) * 13;
             if num_entries > threshold
                 || (1..current_array.sample_size()).any(|i| {
                     num_entries += current_array
@@ -1320,9 +1320,10 @@ where
         if !current_array.has_linked_array() {
             let minimum_capacity = self.minimum_capacity();
             if TYPE == INDEX || current_array.num_slots() > minimum_capacity {
-                // Try to shrink if the estimated load factor is less than `1/8`.
-                let shrink_threshold = current_array.sample_size() * BUCKET_LEN / 8;
-                let rebuild_threshold = current_array.sample_size() / 2;
+                // Try to shrink if the estimated load factor is less than `3/16`.
+                let shrink_threshold = (current_array.sample_size() * BUCKET_LEN / 16) * 3;
+                // Try to rebuild if half the samples need to be rebuilt.
+                let rebuild_threshold = (current_array.sample_size() / 2).max(1);
                 let mut num_entries = 0;
                 let mut num_buckets_to_rebuild = 0;
                 for i in 0..current_array.sample_size() {
@@ -1338,7 +1339,7 @@ where
                     }
                     if TYPE == INDEX && bucket.need_rebuild() {
                         num_buckets_to_rebuild += 1;
-                        if num_buckets_to_rebuild > rebuild_threshold {
+                        if num_buckets_to_rebuild >= rebuild_threshold {
                             self.try_resize(current_array, index, guard);
                             return;
                         }
@@ -1376,9 +1377,9 @@ where
         let estimated_num_entries = Self::sample(current_array, sampling_index);
 
         let new_capacity =
-            if capacity < minimum_capacity || estimated_num_entries >= (capacity / 32) * 25 {
+            if capacity < minimum_capacity || estimated_num_entries >= (capacity / 16) * 13 {
                 // Double the capacity if the estimated load factor is equal to or greater than
-                // `25/32`; `~7%` of buckets are expected to have overflow buckets.
+                // `13/16`; `~10%` of buckets are expected to have overflow buckets.
                 if capacity == self.maximum_capacity() {
                     // Do not resize if the capacity cannot be increased.
                     capacity
@@ -1393,8 +1394,8 @@ where
                     }
                     new_capacity
                 }
-            } else if estimated_num_entries <= capacity / 8 {
-                // Shrink to fit if the estimated load factor is equal to or less than `1/8`.
+            } else if estimated_num_entries <= (capacity / 16) * 3 {
+                // Shrink to fit if the estimated load factor is equal to or less than `3/16`.
                 (estimated_num_entries * 2)
                     .max(minimum_capacity)
                     .max(BucketArray::<K, V, L, TYPE>::minimum_capacity())
