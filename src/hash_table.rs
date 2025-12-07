@@ -1320,8 +1320,8 @@ where
         if !current_array.has_linked_array() {
             let minimum_capacity = self.minimum_capacity();
             if TYPE == INDEX || current_array.num_slots() > minimum_capacity {
-                // Try to shrink if the estimated load factor is less than `3/16`.
-                let shrink_threshold = (current_array.sample_size() * BUCKET_LEN / 16) * 3;
+                // Try to shrink if the estimated load factor is less than `1/8`.
+                let shrink_threshold = current_array.sample_size() * BUCKET_LEN / 8;
                 // Try to rebuild if half the samples need to be rebuilt.
                 let rebuild_threshold = (current_array.sample_size() / 2).max(1);
                 let mut num_entries = 0;
@@ -1394,8 +1394,8 @@ where
                     }
                     new_capacity
                 }
-            } else if estimated_num_entries <= (capacity / 16) * 3 {
-                // Shrink to fit if the estimated load factor is equal to or less than `3/16`.
+            } else if estimated_num_entries <= capacity / 8 {
+                // Shrink to fit if the estimated load factor is equal to or less than `1/8`.
                 (estimated_num_entries * 2)
                     .max(minimum_capacity)
                     .max(BucketArray::<K, V, L, TYPE>::minimum_capacity())
