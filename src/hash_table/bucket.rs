@@ -10,7 +10,7 @@ use saa::Lock;
 use sdd::{AtomicShared, Shared, Tag};
 
 use crate::Equivalent;
-use crate::async_helper::{AsyncGuard, fake_guard};
+use crate::async_helper::AsyncGuard;
 
 /// [`Bucket`] is a lock-protected fixed-size entry array.
 ///
@@ -46,13 +46,13 @@ pub struct DataBlock<K, V, const LEN: usize>([UnsafeCell<MaybeUninit<(K, V)>>; L
 /// [`Writer`] holds an exclusive lock on a [`Bucket`].
 #[derive(Debug)]
 pub struct Writer<K, V, L: LruList, const TYPE: char> {
-    bucket: NonNull<Bucket<K, V, L, TYPE>>,
+    bucket_ptr: NonNull<Bucket<K, V, L, TYPE>>,
 }
 
 /// [`Reader`] holds a shared lock on a [`Bucket`].
 #[derive(Debug)]
 pub struct Reader<K, V, L: LruList, const TYPE: char> {
-    bucket: NonNull<Bucket<K, V, L, TYPE>>,
+    bucket_ptr: NonNull<Bucket<K, V, L, TYPE>>,
 }
 
 /// [`EntryPtr`] points to an entry slot in a [`Bucket`].
@@ -164,7 +164,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         } else {
             self.insert_entry(
                 &self.metadata,
-                unsafe { data_block.as_ref() },
+                data_block_ref(data_block),
                 free_index,
                 occupied_bitmap,
                 hash,
@@ -215,7 +215,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             self.metadata
                 .occupied_bitmap
                 .store(occupied_bitmap & !(1_u32 << entry_ptr.index), Relaxed);
-            Self::read_data_block(unsafe { data_block.as_ref() }, entry_ptr.index)
+            Self::read_data_block(data_block_ref(data_block), entry_ptr.index)
         }
     }
 
@@ -274,10 +274,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             self.metadata
                 .occupied_bitmap
                 .store(occupied_bitmap & !(1_u32 << evicted), Relaxed);
-            return Some(Self::read_data_block(
-                unsafe { data_block.as_ref() },
-                evicted,
-            ));
+            return Some(Self::read_data_block(data_block_ref(data_block), evicted));
         }
 
         None
@@ -346,7 +343,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let entry = if let Some(link) = link_ref(from_entry_ptr.link_ptr) {
             Self::read_data_block(&link.data_block, from_entry_ptr.index)
         } else {
-            Self::read_data_block(unsafe { from_data_block.as_ref() }, from_entry_ptr.index)
+            Self::read_data_block(data_block_ref(from_data_block), from_entry_ptr.index)
         };
         self.insert(data_block, hash, entry);
 
@@ -389,7 +386,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             if occupied_bitmap != 0 {
                 let mut index = occupied_bitmap.trailing_zeros();
                 while index != 32 {
-                    Self::drop_entry(unsafe { data_block.as_ref() }, index as usize);
+                    Self::drop_entry(data_block_ref(data_block), index as usize);
                     occupied_bitmap -= 1_u32 << index;
                     index = occupied_bitmap.trailing_zeros();
                 }
@@ -423,7 +420,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
 
         // Insert a new `LinkedBucket` at the linked list head.
-        let head = self.metadata.link.get_shared(Relaxed, fake_guard());
+        let head = self.metadata.link.get_shared(Relaxed, fake_ref(self));
         let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
         self.write_cell(&link.data_block[0], |block| unsafe {
             block.as_mut_ptr().write(entry);
@@ -558,7 +555,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     {
         if self.len() != 0 {
             if let Some((entry, _)) =
-                Self::search_data_block(&self.metadata, unsafe { data_block.as_ref() }, key, hash)
+                Self::search_data_block(&self.metadata, data_block_ref(data_block), key, hash)
             {
                 return Some(entry);
             }
@@ -592,7 +589,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     {
         if self.len() != 0 {
             if let Some((_, index)) =
-                Self::search_data_block(&self.metadata, unsafe { data_block.as_ref() }, key, hash)
+                Self::search_data_block(&self.metadata, data_block_ref(data_block), key, hash)
             {
                 return EntryPtr {
                     link_ptr: ptr::null(),
@@ -718,7 +715,7 @@ impl<K, V, L: LruList, const TYPE: char> Writer<K, V, L, TYPE> {
     #[inline]
     pub(crate) const fn from_bucket(bucket: &Bucket<K, V, L, TYPE>) -> Writer<K, V, L, TYPE> {
         Writer {
-            bucket: unsafe { NonNull::new_unchecked(from_ref(bucket).cast_mut()) },
+            bucket_ptr: bucket_ptr(bucket),
         }
     }
 
@@ -761,7 +758,7 @@ impl<K, V, L: LruList, const TYPE: char> Deref for Writer<K, V, L, TYPE> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        unsafe { self.bucket.as_ref() }
+        unsafe { self.bucket_ptr.as_ref() }
     }
 }
 
@@ -793,7 +790,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<K, V, L, TYPE> {
             // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
             // This guarantees that the `BucketArray` will survive as long as the `Reader` is alive.
             Some(Reader {
-                bucket: unsafe { NonNull::new_unchecked(from_ref(bucket).cast_mut()) },
+                bucket_ptr: bucket_ptr(bucket),
             })
         } else {
             None
@@ -807,7 +804,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<K, V, L, TYPE> {
     pub(crate) fn lock_sync(bucket: &Bucket<K, V, L, TYPE>) -> Option<Reader<K, V, L, TYPE>> {
         if bucket.rw_lock.share_sync() {
             Some(Reader {
-                bucket: unsafe { NonNull::new_unchecked(from_ref(bucket).cast_mut()) },
+                bucket_ptr: bucket_ptr(bucket),
             })
         } else {
             None
@@ -819,7 +816,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<K, V, L, TYPE> {
     pub(crate) fn try_lock(bucket: &Bucket<K, V, L, TYPE>) -> Option<Reader<K, V, L, TYPE>> {
         if bucket.rw_lock.try_share() {
             Some(Reader {
-                bucket: unsafe { NonNull::new_unchecked(from_ref(bucket).cast_mut()) },
+                bucket_ptr: bucket_ptr(bucket),
             })
         } else {
             None
@@ -832,7 +829,7 @@ impl<K, V, L: LruList, const TYPE: char> Deref for Reader<K, V, L, TYPE> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        unsafe { self.bucket.as_ref() }
+        unsafe { self.bucket_ptr.as_ref() }
     }
 }
 
@@ -877,6 +874,39 @@ impl<K, V, const TYPE: char> EntryPtr<K, V, TYPE> {
         }
     }
 
+    /// Gets a reference to the entry.
+    ///
+    /// The [`EntryPtr`] must point to a valid entry.
+    #[inline]
+    pub(crate) const fn get<'e>(
+        &self,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
+    ) -> &'e (K, V) {
+        let entry_ptr = if let Some(link) = link_ref(self.link_ptr) {
+            Bucket::<K, V, (), TYPE>::entry_ptr(&link.data_block, self.index)
+        } else {
+            Bucket::<K, V, (), TYPE>::entry_ptr(data_block_ref(data_block), self.index)
+        };
+        unsafe { &(*entry_ptr) }
+    }
+
+    /// Gets a mutable reference to the entry.
+    ///
+    /// The associated [`Bucket`] must be locked, and the [`EntryPtr`] must point to a valid entry.
+    #[inline]
+    pub(crate) const fn get_mut<L: LruList>(
+        &mut self,
+        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
+        _writer: &Writer<K, V, L, TYPE>,
+    ) -> &mut (K, V) {
+        let entry_ptr = if let Some(link) = link_ref(self.link_ptr) {
+            Bucket::<K, V, L, TYPE>::entry_mut_ptr(&link.data_block, self.index)
+        } else {
+            Bucket::<K, V, L, TYPE>::entry_mut_ptr(data_block_ref(data_block), self.index)
+        };
+        unsafe { &mut (*entry_ptr) }
+    }
+
     /// Moves the [`EntryPtr`] to point to the next occupied entry.
     ///
     /// Returns `true` if it successfully found the next occupied entry.
@@ -897,40 +927,6 @@ impl<K, V, const TYPE: char> EntryPtr<K, V, TYPE> {
         }
 
         false
-    }
-
-    /// Gets a reference to the entry.
-    ///
-    /// The [`EntryPtr`] must point to a valid entry.
-    #[inline]
-    pub(crate) fn get<'e>(&self, data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>) -> &'e (K, V) {
-        debug_assert_ne!(self.index, usize::MAX);
-
-        let entry_ptr = if let Some(link) = link_ref(self.link_ptr) {
-            Bucket::<K, V, (), TYPE>::entry_ptr(&link.data_block, self.index)
-        } else {
-            Bucket::<K, V, (), TYPE>::entry_ptr(unsafe { data_block.as_ref() }, self.index)
-        };
-        unsafe { &(*entry_ptr) }
-    }
-
-    /// Gets a mutable reference to the entry.
-    ///
-    /// The associated [`Bucket`] must be locked, and the [`EntryPtr`] must point to a valid entry.
-    #[inline]
-    pub(crate) fn get_mut<L: LruList>(
-        &mut self,
-        data_block: NonNull<DataBlock<K, V, BUCKET_LEN>>,
-        _writer: &Writer<K, V, L, TYPE>,
-    ) -> &mut (K, V) {
-        debug_assert_ne!(self.index, usize::MAX);
-
-        let entry_ptr = if let Some(link) = link_ref(self.link_ptr) {
-            Bucket::<K, V, L, TYPE>::entry_mut_ptr(&link.data_block, self.index)
-        } else {
-            Bucket::<K, V, L, TYPE>::entry_mut_ptr(unsafe { data_block.as_ref() }, self.index)
-        };
-        unsafe { &mut (*entry_ptr) }
     }
 
     /// Unlinks the [`LinkedBucket`] currently pointed to by this [`EntryPtr`] from the linked list.
@@ -1171,7 +1167,7 @@ impl<K, V, const LEN: usize> Metadata<K, V, LEN> {
     /// Loads the linked bucket pointer.
     #[inline]
     fn load_link(&self) -> *const LinkedBucket<K, V> {
-        unsafe { self.link.load(Acquire, fake_guard()).as_ptr_unchecked() }
+        unsafe { self.link.load(Acquire, fake_ref(&self)).as_ptr_unchecked() }
     }
 }
 
@@ -1224,9 +1220,33 @@ impl<K, V> Drop for LinkedBucket<K, V> {
     }
 }
 
+/// Returns a pointer to a bucket.
+#[inline]
+const fn bucket_ptr<K, V, L: LruList, const TYPE: char>(
+    bucket: &Bucket<K, V, L, TYPE>,
+) -> NonNull<Bucket<K, V, L, TYPE>> {
+    unsafe { NonNull::new_unchecked(from_ref(bucket).cast_mut()) }
+}
+
+/// Returns a reference to the data block.
+#[inline]
+const fn data_block_ref<'l, K, V, const LEN: usize>(
+    data_block_ptr: NonNull<DataBlock<K, V, LEN>>,
+) -> &'l DataBlock<K, V, LEN> {
+    unsafe { data_block_ptr.as_ref() }
+}
+
 /// Returns a reference to the linked bucket that the pointer might point to.
+#[inline]
 const fn link_ref<'l, K, V>(ptr: *const LinkedBucket<K, V>) -> Option<&'l LinkedBucket<K, V>> {
     unsafe { ptr.as_ref() }
+}
+
+/// Returns a fake reference for passing a reference to `U` when it is ensured that the returned
+/// reference is never used.
+#[inline]
+const fn fake_ref<'l, T, U>(v: &T) -> &'l U {
+    unsafe { &*ptr::from_ref(v).cast::<U>() }
 }
 
 #[cfg(not(feature = "loom"))]
