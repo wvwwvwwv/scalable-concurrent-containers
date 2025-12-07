@@ -810,18 +810,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<K, V, L, TYPE> {
             None
         }
     }
-
-    /// Tries to lock the [`Bucket`].
-    #[inline]
-    pub(crate) fn try_lock(bucket: &Bucket<K, V, L, TYPE>) -> Option<Reader<K, V, L, TYPE>> {
-        if bucket.rw_lock.try_share() {
-            Some(Reader {
-                bucket_ptr: bucket_ptr(bucket),
-            })
-        } else {
-            None
-        }
-    }
 }
 
 impl<K, V, L: LruList, const TYPE: char> Deref for Reader<K, V, L, TYPE> {

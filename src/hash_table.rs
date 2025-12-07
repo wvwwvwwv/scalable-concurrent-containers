@@ -311,14 +311,7 @@ where
 
             let bucket_index = current_array.bucket_index(hash);
             let bucket = current_array.bucket(bucket_index);
-            if let Some(reader) = Reader::try_lock(bucket) {
-                if let Some(entry) =
-                    reader.search_entry(current_array.data_block(bucket_index), key, hash)
-                {
-                    return Some(f(&entry.0, &entry.1));
-                }
-                break;
-            } else if let Some(reader) = Reader::lock_async(bucket, &async_guard).await {
+            if let Some(reader) = Reader::lock_async(bucket, &async_guard).await {
                 if let Some(entry) =
                     reader.search_entry(current_array.data_block(bucket_index), key, hash)
                 {
@@ -414,9 +407,6 @@ where
     #[inline]
     fn writer_sync(&self, hash: u64) -> LockedBucket<K, V, L, TYPE> {
         let guard = Guard::new();
-        if let Some(locked_bucket) = self.try_optional_writer::<true>(hash, &guard) {
-            return locked_bucket;
-        }
         loop {
             let current_array = self.get_or_create_bucket_array(&guard);
             let bucket_index = current_array.bucket_index(hash);
@@ -490,9 +480,6 @@ where
     #[inline]
     fn optional_writer_sync(&self, hash: u64) -> Option<LockedBucket<K, V, L, TYPE>> {
         let guard = Guard::new();
-        if let Some(locked_bucket) = self.try_optional_writer::<false>(hash, &guard) {
-            return Some(locked_bucket);
-        }
         while let Some(current_array) = self.bucket_array(&guard) {
             let bucket_index = current_array.bucket_index(hash);
             if let Some(old_array) = current_array.linked_array(&guard) {
