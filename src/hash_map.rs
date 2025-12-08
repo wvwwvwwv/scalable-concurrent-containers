@@ -2377,7 +2377,7 @@ where
 
         let guard = Guard::new();
         if let Some(current_array) = self.hashmap.bucket_array(&guard) {
-            self.try_shrink_or_rebuild(current_array, 0, &guard);
+            self.try_shrink(current_array, 0, &guard);
         }
     }
 }

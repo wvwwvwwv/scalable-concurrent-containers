@@ -220,28 +220,6 @@ where
         num_entries * (current_array.len() / (sample_size * 2))
     }
 
-    /// Checks whether rebuilding the entire hash table is required.
-    #[inline]
-    fn check_rebuild(current_array: &BucketArray<K, V, L, TYPE>, sampling_index: usize) -> bool {
-        let sample_size = current_array.sample_size();
-        let sample_1 = sampling_index & (!(sample_size - 1));
-        let sample_2 = if sample_1 == 0 {
-            current_array.len() - sample_size
-        } else {
-            0
-        };
-        let mut num_buckets_to_rebuild = 0;
-        for i in (sample_1..sample_1 + sample_size).chain(sample_2..(sample_2 + sample_size)) {
-            if current_array.bucket(i).need_rebuild() {
-                num_buckets_to_rebuild += 1;
-                if num_buckets_to_rebuild >= sample_size {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     /// Peeks an entry from the [`HashTable`].
     #[inline]
     fn peek_entry<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g (K, V)>
@@ -707,8 +685,11 @@ where
         }
 
         if removed {
+            if TYPE == INDEX {
+                async_guard.guard().set_has_garbage();
+            }
             if let Some(current_array) = self.bucket_array(async_guard.guard()) {
-                self.try_shrink_or_rebuild(current_array, 0, async_guard.guard());
+                self.try_shrink(current_array, 0, async_guard.guard());
             }
         }
     }
@@ -773,8 +754,11 @@ where
         }
 
         if removed {
+            if TYPE == INDEX {
+                guard.set_has_garbage();
+            }
             if let Some(current_array) = self.bucket_array(guard) {
-                self.try_shrink_or_rebuild(current_array, 0, guard);
+                self.try_shrink(current_array, 0, guard);
             }
         }
     }
@@ -1296,43 +1280,24 @@ where
         }
     }
 
-    /// Tries to shrink the [`HashTable`] to fit the estimated number of entries or rebuild it to
-    /// optimize the storage.
-    fn try_shrink_or_rebuild(
-        &self,
-        current_array: &BucketArray<K, V, L, TYPE>,
-        index: usize,
-        guard: &Guard,
-    ) {
+    /// Tries to shrink the [`HashTable`] to fit the estimated number of entries it to optimize the
+    /// storage.
+    fn try_shrink(&self, current_array: &BucketArray<K, V, L, TYPE>, index: usize, guard: &Guard) {
         if !current_array.has_linked_array() {
             let minimum_capacity = self.minimum_capacity();
-            if TYPE == INDEX || current_array.num_slots() > minimum_capacity {
+            if current_array.num_slots() > minimum_capacity {
                 // Try to shrink if the estimated load factor is less than `1/8`.
                 let shrink_threshold = current_array.sample_size() * BUCKET_LEN / 8;
-                // Try to rebuild if half the samples need to be rebuilt.
-                let rebuild_threshold = (current_array.sample_size() / 2).max(1);
                 let mut num_entries = 0;
-                let mut num_buckets_to_rebuild = 0;
                 for i in 0..current_array.sample_size() {
                     let bucket = current_array.bucket((index + i) % current_array.len());
                     num_entries += bucket.len();
-                    if num_entries >= shrink_threshold
-                        && (TYPE != INDEX
-                            || num_buckets_to_rebuild + (current_array.sample_size() - i)
-                                < rebuild_threshold)
-                    {
+                    if num_entries >= shrink_threshold {
                         // Early exit.
                         return;
                     }
-                    if TYPE == INDEX && bucket.need_rebuild() {
-                        num_buckets_to_rebuild += 1;
-                        if num_buckets_to_rebuild >= rebuild_threshold {
-                            self.try_resize(current_array, index, guard);
-                            return;
-                        }
-                    }
                 }
-                if TYPE != INDEX || num_entries <= shrink_threshold {
+                if num_entries <= shrink_threshold {
                     self.try_resize(current_array, index, guard);
                 }
             }
@@ -1393,10 +1358,7 @@ where
 
         let try_resize = new_capacity != capacity;
         let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
-        let try_rebuild =
-            TYPE == INDEX && !try_resize && Self::check_rebuild(current_array, sampling_index);
-
-        if !try_resize && !try_drop_table && !try_rebuild {
+        if !try_resize && !try_drop_table {
             // Nothing to do.
             return;
         }
@@ -1454,7 +1416,7 @@ where
                     self.defer_reclaim(bucket_array, guard);
                 }
             }
-        } else if try_resize || try_rebuild {
+        } else if try_resize {
             let new_bucket_array = unsafe {
                 Shared::new_unchecked(BucketArray::<K, V, L, TYPE>::new(
                     new_capacity,
@@ -1550,11 +1512,13 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         H: BuildHasher,
     {
         let removed = self.writer.remove(self.data_block, entry_ptr);
-        self.try_shrink_or_rebuild(hash_table);
+        if self.len() == 0 {
+            self.try_shrink(hash_table, &Guard::new());
+        }
         removed
     }
 
-    /// Removes the entry and tries to shrink or rebuild the container.
+    /// Removes the entry and tries to shrink the container.
     #[inline]
     pub(crate) fn mark_removed<H, T: HashTable<K, V, H, L, TYPE>>(
         self,
@@ -1565,26 +1529,36 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
     {
         debug_assert_eq!(TYPE, INDEX);
 
-        self.writer.mark_removed(entry_ptr);
-        self.try_shrink_or_rebuild(hash_table);
+        let guard = Guard::new();
+        self.writer.mark_removed(entry_ptr, &guard);
+        self.set_has_garbage(&guard);
+        if self.writer.len() == 0 {
+            self.try_shrink(hash_table, &guard);
+        }
     }
 
-    /// Tries to shrink or rebuild the container.
+    /// Sets that there can be a garbage entry in the bucket so the epoch should be advanced.
     #[inline]
-    pub(crate) fn try_shrink_or_rebuild<H, T: HashTable<K, V, H, L, TYPE>>(self, hash_table: &T)
+    pub(crate) const fn set_has_garbage(&self, guard: &Guard) {
+        let sample_size = self.bucket_array().sample_size();
+        if self.bucket_index % (sample_size * sample_size) == 0 {
+            guard.set_has_garbage();
+        }
+    }
+
+    /// Tries to shrink the container.
+    #[inline]
+    pub(crate) fn try_shrink<H, T: HashTable<K, V, H, L, TYPE>>(self, hash_table: &T, guard: &Guard)
     where
         H: BuildHasher,
     {
-        if (TYPE == INDEX && self.writer.need_rebuild()) || self.writer.len() == 0 {
-            let guard = Guard::new();
-            if let Some(current_array) = hash_table.bucket_array(&guard) {
-                if ptr::eq(current_array, self.bucket_array()) {
-                    let bucket_index = self.bucket_index;
-                    drop(self);
+        if let Some(current_array) = hash_table.bucket_array(guard) {
+            if ptr::eq(current_array, self.bucket_array()) {
+                let bucket_index = self.bucket_index;
+                drop(self);
 
-                    // Tries to shrink or rebuild the container after unlocking the bucket.
-                    hash_table.try_shrink_or_rebuild(current_array, bucket_index, &guard);
-                }
+                // Tries to shrink the container after unlocking the bucket.
+                hash_table.try_shrink(current_array, bucket_index, guard);
             }
         }
     }
@@ -1607,7 +1581,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         let len = self.bucket_array().len();
 
         if self.writer.len() == 0 {
-            self.try_shrink_or_rebuild(hash_table);
+            self.try_shrink(hash_table, &Guard::new());
         } else {
             drop(self);
         }
@@ -1649,7 +1623,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         let len = self.bucket_array().len();
 
         if self.writer.len() == 0 {
-            self.try_shrink_or_rebuild(hash_table);
+            self.try_shrink(hash_table, &Guard::new());
         } else {
             drop(self);
         }

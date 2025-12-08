@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.4.6
+
+* Improve `HashIndex` entry slot recycling strategies.
+
 3.4.5
 
 * Minor `Hash*` performance improvements.
