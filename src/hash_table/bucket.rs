@@ -96,7 +96,7 @@ struct Metadata<K, V, const LEN: usize> {
     occupied_bitmap: AtomicU32,
     /// Removed slot bitmap, or the 1-based index of the most recently used entry if
     /// `TYPE = CACHE` where `0` represents `nil`.
-    removed_bitmap_or_lru_tail: AtomicU32,
+    removed_bitmap: AtomicU32,
     /// Partial hash array for fast hash lookup, or the epoch when the corresponding entry was
     /// removed if `TYPE = INDEX`.
     partial_hash_array: [UnsafeCell<u8>; LEN],
@@ -126,7 +126,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             metadata: Metadata {
                 link: AtomicShared::default(),
                 occupied_bitmap: AtomicU32::default(),
-                removed_bitmap_or_lru_tail: AtomicU32::default(),
+                removed_bitmap: AtomicU32::default(),
                 partial_hash_array: Default::default(),
             },
             lru_list: L::default(),
@@ -148,9 +148,12 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         entry: (K, V),
     ) -> EntryPtr<K, V, TYPE> {
         let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
-        if TYPE == INDEX && occupied_bitmap == u32::MAX && self.len() < BUCKET_LEN {
-            self.clear_unreachable_entries(data_block_ref(data_block));
-        }
+        let occupied_bitmap =
+            if TYPE == INDEX && occupied_bitmap == u32::MAX && self.len() < BUCKET_LEN {
+                self.clear_unreachable_entries(data_block_ref(data_block))
+            } else {
+                occupied_bitmap
+            };
         let free_index = occupied_bitmap.trailing_ones() as usize;
         if free_index == BUCKET_LEN {
             self.insert_overflow(hash, entry)
@@ -227,25 +230,21 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 *h = u8::from(guard.epoch());
             });
 
-            let mut removed_bitmap = link.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
+            let mut removed_bitmap = link.metadata.removed_bitmap.load(Relaxed);
             debug_assert_eq!(removed_bitmap & (1_u32 << entry_ptr.index), 0);
 
             removed_bitmap |= 1_u32 << entry_ptr.index;
-            link.metadata
-                .removed_bitmap_or_lru_tail
-                .store(removed_bitmap, Release);
+            link.metadata.removed_bitmap.store(removed_bitmap, Release);
         } else {
             self.write_cell(&self.metadata.partial_hash_array[entry_ptr.index], |h| {
                 *h = u8::from(guard.epoch());
             });
 
-            let mut removed_bitmap = self.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
+            let mut removed_bitmap = self.metadata.removed_bitmap.load(Relaxed);
             debug_assert_eq!(removed_bitmap & (1_u32 << entry_ptr.index), 0);
 
             removed_bitmap |= 1_u32 << entry_ptr.index;
-            self.metadata
-                .removed_bitmap_or_lru_tail
-                .store(removed_bitmap, Release);
+            self.metadata.removed_bitmap.store(removed_bitmap, Release);
         }
         guard.set_has_garbage();
     }
@@ -262,11 +261,9 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         if occupied_bitmap == 0b1111_1111_1111_1111_1111_1111_1111_1111 {
             self.len.store(self.len.load(Relaxed) - 1, Relaxed);
 
-            let tail = self.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
+            let tail = self.metadata.removed_bitmap.load(Relaxed);
             let evicted = if let Some((evicted, new_tail)) = self.lru_list.evict(tail) {
-                self.metadata
-                    .removed_bitmap_or_lru_tail
-                    .store(new_tail, Relaxed);
+                self.metadata.removed_bitmap.store(new_tail, Relaxed);
                 evicted as usize
             } else {
                 // Evict the first occupied entry.
@@ -293,11 +290,9 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         if entry_ptr.link_ptr.is_null() {
             #[allow(clippy::cast_possible_truncation)]
             let entry = entry_ptr.index as u8;
-            let tail = self.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
+            let tail = self.metadata.removed_bitmap.load(Relaxed);
             if let Some(new_tail) = self.lru_list.promote(tail, entry) {
-                self.metadata
-                    .removed_bitmap_or_lru_tail
-                    .store(new_tail, Relaxed);
+                self.metadata.removed_bitmap.store(new_tail, Relaxed);
             }
         }
     }
@@ -465,39 +460,38 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     }
 
     /// Clears unreachable entries.
-    fn clear_unreachable_entries(&self, data_block: &DataBlock<K, V, BUCKET_LEN>) {
+    fn clear_unreachable_entries(&self, data_block: &DataBlock<K, V, BUCKET_LEN>) -> u32 {
         debug_assert_eq!(TYPE, INDEX);
 
         let guard = Guard::new();
 
-        Self::drop_unreachable_entries(&self.metadata, data_block, &guard);
-
-        let mut last_link_ptr = self.metadata.load_link();
-        let mut next_link_ptr = ptr::null();
-        while let Some(link) = link_ref(last_link_ptr) {
-            next_link_ptr = link.metadata.load_link();
+        let mut link_ptr = self.metadata.load_link();
+        while let Some(link) = link_ref(link_ptr) {
+            let mut next_link_ptr = link.metadata.load_link();
             if next_link_ptr.is_null() {
+                while let Some(link) = link_ref(link_ptr) {
+                    let prev_link_ptr = link.prev_link.load(Acquire);
+                    if Self::drop_unreachable_entries(&link.metadata, &link.data_block, &guard) == 0
+                        && next_link_ptr.is_null()
+                    {
+                        debug_assert!(link.metadata.link.is_null(Relaxed));
+                        let unlinked = if let Some(prev) = unsafe { prev_link_ptr.as_ref() } {
+                            prev.metadata.link.swap((None, Tag::None), Acquire).0
+                        } else {
+                            self.metadata.link.swap((None, Tag::None), Acquire).0
+                        };
+                        debug_assert!(unlinked.is_some_and(Shared::release));
+                    } else {
+                        next_link_ptr = link_ptr;
+                    }
+                    link_ptr = prev_link_ptr;
+                }
                 break;
             }
-            last_link_ptr = next_link_ptr;
+            link_ptr = next_link_ptr;
         }
 
-        while let Some(link) = link_ref(last_link_ptr) {
-            let prev_link_ptr = link.prev_link.load(Acquire);
-            Self::drop_unreachable_entries(&link.metadata, &link.data_block, &guard);
-            if next_link_ptr.is_null() && link.metadata.occupied_bitmap.load(Relaxed) == 0 {
-                debug_assert!(link.metadata.link.is_null(Relaxed));
-                let unlinked = if let Some(prev) = unsafe { prev_link_ptr.as_ref() } {
-                    prev.metadata.link.swap((None, Tag::None), Acquire).0
-                } else {
-                    self.metadata.link.swap((None, Tag::None), Acquire).0
-                };
-                debug_assert!(unlinked.is_some_and(Shared::release));
-            } else {
-                next_link_ptr = last_link_ptr;
-            }
-            last_link_ptr = prev_link_ptr;
-        }
+        Self::drop_unreachable_entries(&self.metadata, data_block, &guard)
     }
 
     /// Drops unreachable entries.
@@ -505,10 +499,10 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         metadata: &Metadata<K, V, LEN>,
         data_block: &DataBlock<K, V, LEN>,
         guard: &Guard,
-    ) {
+    ) -> u32 {
         debug_assert_eq!(TYPE, INDEX);
 
-        let mut dropped_bitmap = metadata.removed_bitmap_or_lru_tail.load(Relaxed);
+        let mut dropped_bitmap = metadata.removed_bitmap.load(Relaxed);
 
         let current_epoch = guard.epoch();
         for i in 0..LEN {
@@ -520,24 +514,23 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
 
         // Store ordering: `occupied_bitmap` -> `release` -> `removed_bitmap`.
-        metadata.occupied_bitmap.store(
-            metadata.occupied_bitmap.load(Relaxed) & !dropped_bitmap,
-            Release,
-        );
-        metadata.removed_bitmap_or_lru_tail.store(
-            metadata.removed_bitmap_or_lru_tail.load(Relaxed) & !dropped_bitmap,
-            Release,
-        );
+        let occupied_bitmap = metadata.occupied_bitmap.load(Relaxed) & !dropped_bitmap;
+        metadata.occupied_bitmap.store(occupied_bitmap, Release);
+        let removed_bitmap = metadata.removed_bitmap.load(Relaxed) & !dropped_bitmap;
+        metadata.removed_bitmap.store(removed_bitmap, Release);
+        if removed_bitmap != 0 {
+            guard.set_has_garbage();
+        }
+
         if needs_drop::<(K, V)>() {
             while dropped_bitmap != 0 {
                 let index = dropped_bitmap.trailing_zeros();
-                Bucket::<K, V, (), MAP>::drop_entry(data_block, index as usize);
+                Self::drop_entry(data_block, index as usize);
                 dropped_bitmap -= 1_u32 << index;
             }
         }
-        if metadata.removed_bitmap_or_lru_tail.load(Relaxed) != 0 {
-            guard.set_has_garbage();
-        }
+
+        occupied_bitmap
     }
 
     /// Drops the data in place.
@@ -558,11 +551,9 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         if entry_ptr.link_ptr.is_null() {
             #[allow(clippy::cast_possible_truncation)]
             let entry = entry_ptr.index as u8;
-            let tail = self.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
+            let tail = self.metadata.removed_bitmap.load(Relaxed);
             if let Some(new_tail) = self.lru_list.remove(tail, entry) {
-                self.metadata
-                    .removed_bitmap_or_lru_tail
-                    .store(new_tail, Relaxed);
+                self.metadata.removed_bitmap.store(new_tail, Relaxed);
             }
         }
     }
@@ -702,8 +693,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     {
         let mut bitmap = if TYPE == INDEX {
             // Load ordering: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
-            (!metadata.removed_bitmap_or_lru_tail.load(Acquire))
-                & metadata.occupied_bitmap.load(Acquire)
+            (!metadata.removed_bitmap.load(Acquire)) & metadata.occupied_bitmap.load(Acquire)
         } else {
             metadata.occupied_bitmap.load(Relaxed)
         };
@@ -802,7 +792,7 @@ impl<K, V, L: LruList, const TYPE: char> Writer<K, V, L, TYPE> {
         debug_assert!(self.rw_lock.is_locked(Relaxed));
         debug_assert!(
             TYPE != INDEX
-                || self.metadata.removed_bitmap_or_lru_tail.load(Relaxed)
+                || self.metadata.removed_bitmap.load(Relaxed)
                     == self.metadata.occupied_bitmap.load(Relaxed)
         );
 
@@ -1034,8 +1024,7 @@ impl<K, V, const TYPE: char> EntryPtr<K, V, TYPE> {
         if current_index < LEN {
             let bitmap = if TYPE == INDEX {
                 // Load order: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
-                (!metadata.removed_bitmap_or_lru_tail.load(Acquire)
-                    & metadata.occupied_bitmap.load(Acquire))
+                (!metadata.removed_bitmap.load(Acquire) & metadata.occupied_bitmap.load(Acquire))
                     & (!((1_u32 << current_index) - 1))
             } else {
                 metadata.occupied_bitmap.load(Relaxed) & (!((1_u32 << current_index) - 1))
@@ -1246,7 +1235,7 @@ impl<K, V> LinkedBucket<K, V> {
             metadata: Metadata {
                 link: AtomicShared::default(),
                 occupied_bitmap: AtomicU32::default(),
-                removed_bitmap_or_lru_tail: AtomicU32::default(),
+                removed_bitmap: AtomicU32::default(),
                 partial_hash_array: Default::default(),
             },
             data_block: unsafe {
@@ -1344,7 +1333,7 @@ mod test {
                 let evicted = writer.evict_lru_head(data_block_ptr);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
                 writer.insert(data_block_ptr, 0, (v, v));
-                assert_eq!(writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
+                assert_eq!(writer.metadata.removed_bitmap.load(Relaxed), 0);
             }
         }
 
@@ -1363,13 +1352,13 @@ mod test {
                     writer.update_lru_tail(&entry_ptr);
                     if v < BUCKET_LEN {
                         assert_eq!(
-                            writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize,
+                            writer.metadata.removed_bitmap.load(Relaxed) as usize,
                             v + 1
                         );
                     }
                     assert_eq!(
                         writer.lru_list.read
-                            (writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize - 1)
+                            (writer.metadata.removed_bitmap.load(Relaxed) as usize - 1)
                             .0,
                         0
                     );
@@ -1381,7 +1370,7 @@ mod test {
                     assert!(evicted.is_some());
                     evicted_key = evicted.map(|(k, _)| k);
                 }
-                assert_ne!(writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
+                assert_ne!(writer.metadata.removed_bitmap.load(Relaxed), 0);
 
                 for v in 0..xs {
                     let mut entry_ptr = writer.get_entry_ptr(data_block_ptr, &v, 0);
@@ -1391,7 +1380,7 @@ mod test {
                         assert_eq!(v, evicted_key.unwrap());
                     }
                 }
-                assert_eq!(writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
+                assert_eq!(writer.metadata.removed_bitmap.load(Relaxed), 0);
             }
         }
 
@@ -1410,14 +1399,14 @@ mod test {
                 let mut entry_ptr = writer.insert(data_block_ptr, 0, (v, v));
                 writer.update_lru_tail(&entry_ptr);
                 assert_eq!(
-                    writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize,
+                    writer.metadata.removed_bitmap.load(Relaxed) as usize,
                     entry_ptr.index + 1
                 );
                 if v >= BUCKET_LEN {
                     entry_ptr.index = xs % BUCKET_LEN;
                     writer.update_lru_tail(&entry_ptr);
                     assert_eq!(
-                        writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize,
+                        writer.metadata.removed_bitmap.load(Relaxed) as usize,
                         entry_ptr.index + 1
                     );
                     let mut iterated = 1;
@@ -1472,7 +1461,7 @@ mod test {
                 assert_eq!(iterated, xs - v);
                 writer.remove_from_lru_list(&entry_ptr);
             }
-            assert_eq!(bucket.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
+            assert_eq!(bucket.metadata.removed_bitmap.load(Relaxed), 0);
         }
     }
 
