@@ -150,10 +150,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
         let free_index = occupied_bitmap.trailing_ones() as usize;
         let (free_index, occupied_bitmap) = if TYPE == INDEX && free_index == BUCKET_LEN {
-            Self::try_drop_entries(&self.metadata, data_block_ref(data_block));
-            if !self.metadata.load_link().is_null() {
-                self.cleanup_overflow_buckets();
-            }
+            self.clear_unreachable_entries(data_block_ref(data_block));
             let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
             (occupied_bitmap.trailing_ones() as usize, occupied_bitmap)
         } else {
@@ -403,38 +400,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
     }
 
-    /// Cleans up overflow buckets.
-    fn cleanup_overflow_buckets(&self) {
-        debug_assert_eq!(TYPE, INDEX);
-
-        let mut last_link_ptr = self.metadata.load_link();
-        let mut next_link_ptr = ptr::null();
-        while let Some(link) = link_ref(last_link_ptr) {
-            next_link_ptr = link.metadata.load_link();
-            if next_link_ptr.is_null() {
-                break;
-            }
-            last_link_ptr = next_link_ptr;
-        }
-
-        while let Some(link) = link_ref(last_link_ptr) {
-            let prev_link_ptr = link.prev_link.load(Acquire);
-            Self::try_drop_entries(&link.metadata, &link.data_block);
-            if next_link_ptr.is_null() && link.metadata.occupied_bitmap.load(Relaxed) == 0 {
-                debug_assert!(link.metadata.link.is_null(Relaxed));
-                let unlinked = if let Some(prev) = unsafe { prev_link_ptr.as_ref() } {
-                    prev.metadata.link.swap((None, Tag::None), Acquire).0
-                } else {
-                    self.metadata.link.swap((None, Tag::None), Acquire).0
-                };
-                debug_assert!(unlinked.is_some_and(Shared::release));
-            } else {
-                next_link_ptr = last_link_ptr;
-            }
-            last_link_ptr = prev_link_ptr;
-        }
-    }
-
     /// Inserts an entry into an overflow bucket.
     fn insert_overflow(&self, hash: u64, entry: (K, V)) -> EntryPtr<K, V, TYPE> {
         let mut link_ptr = self.metadata.load_link();
@@ -505,14 +470,50 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         );
     }
 
-    /// Tries to drop unreachable entries.
-    fn try_drop_entries<const LEN: usize>(
-        metadata: &Metadata<K, V, LEN>,
-        data_block: &DataBlock<K, V, LEN>,
-    ) {
+    /// Clears unreachable entries.
+    fn clear_unreachable_entries(&self, data_block: &DataBlock<K, V, BUCKET_LEN>) {
         debug_assert_eq!(TYPE, INDEX);
 
         let guard = Guard::new();
+
+        Self::drop_unreachable_entries(&self.metadata, data_block, &guard);
+
+        let mut last_link_ptr = self.metadata.load_link();
+        let mut next_link_ptr = ptr::null();
+        while let Some(link) = link_ref(last_link_ptr) {
+            next_link_ptr = link.metadata.load_link();
+            if next_link_ptr.is_null() {
+                break;
+            }
+            last_link_ptr = next_link_ptr;
+        }
+
+        while let Some(link) = link_ref(last_link_ptr) {
+            let prev_link_ptr = link.prev_link.load(Acquire);
+            Self::drop_unreachable_entries(&link.metadata, &link.data_block, &guard);
+            if next_link_ptr.is_null() && link.metadata.occupied_bitmap.load(Relaxed) == 0 {
+                debug_assert!(link.metadata.link.is_null(Relaxed));
+                let unlinked = if let Some(prev) = unsafe { prev_link_ptr.as_ref() } {
+                    prev.metadata.link.swap((None, Tag::None), Acquire).0
+                } else {
+                    self.metadata.link.swap((None, Tag::None), Acquire).0
+                };
+                debug_assert!(unlinked.is_some_and(Shared::release));
+            } else {
+                next_link_ptr = last_link_ptr;
+            }
+            last_link_ptr = prev_link_ptr;
+        }
+    }
+
+    /// Drops unreachable entries.
+    fn drop_unreachable_entries<const LEN: usize>(
+        metadata: &Metadata<K, V, LEN>,
+        data_block: &DataBlock<K, V, LEN>,
+        guard: &Guard,
+    ) {
+        debug_assert_eq!(TYPE, INDEX);
+
         let current_epoch = guard.epoch();
         let mut removed_bitmap = metadata.removed_bitmap_or_lru_tail.load(Relaxed);
         let mut index = removed_bitmap.trailing_zeros();
