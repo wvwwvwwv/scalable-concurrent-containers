@@ -148,14 +148,10 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         entry: (K, V),
     ) -> EntryPtr<K, V, TYPE> {
         let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
-        let free_index = occupied_bitmap.trailing_ones() as usize;
-        let (free_index, occupied_bitmap) = if TYPE == INDEX && free_index == BUCKET_LEN {
+        if TYPE == INDEX && occupied_bitmap == u32::MAX && self.len() != BUCKET_LEN {
             self.clear_unreachable_entries(data_block_ref(data_block));
-            let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
-            (occupied_bitmap.trailing_ones() as usize, occupied_bitmap)
-        } else {
-            (free_index, occupied_bitmap)
-        };
+        }
+        let free_index = occupied_bitmap.trailing_ones() as usize;
         if free_index == BUCKET_LEN {
             self.insert_overflow(hash, entry)
         } else {
@@ -227,18 +223,22 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         let guard = Guard::new();
         if let Some(link) = link_ref(entry_ptr.link_ptr) {
+            self.write_cell(&link.metadata.partial_hash_array[entry_ptr.index], |h| {
+                *h = u8::from(guard.epoch());
+            });
+
             let mut removed_bitmap = link.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
             debug_assert_eq!(removed_bitmap & (1_u32 << entry_ptr.index), 0);
 
             removed_bitmap |= 1_u32 << entry_ptr.index;
-
             link.metadata
                 .removed_bitmap_or_lru_tail
                 .store(removed_bitmap, Release);
-            self.write_cell(&link.metadata.partial_hash_array[entry_ptr.index], |h| {
+        } else {
+            self.write_cell(&self.metadata.partial_hash_array[entry_ptr.index], |h| {
                 *h = u8::from(guard.epoch());
             });
-        } else {
+
             let mut removed_bitmap = self.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
             debug_assert_eq!(removed_bitmap & (1_u32 << entry_ptr.index), 0);
 
@@ -246,9 +246,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             self.metadata
                 .removed_bitmap_or_lru_tail
                 .store(removed_bitmap, Release);
-            self.write_cell(&self.metadata.partial_hash_array[entry_ptr.index], |h| {
-                *h = u8::from(guard.epoch());
-            });
         }
         guard.accelerate();
     }
@@ -389,13 +386,10 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
         if needs_drop::<(K, V)>() {
             let mut occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
-            if occupied_bitmap != 0 {
-                let mut index = occupied_bitmap.trailing_zeros();
-                while index != u32::BITS {
-                    Self::drop_entry(data_block_ref(data_block), index as usize);
-                    occupied_bitmap -= 1_u32 << index;
-                    index = occupied_bitmap.trailing_zeros();
-                }
+            while occupied_bitmap != 0 {
+                let index = occupied_bitmap.trailing_zeros();
+                Self::drop_entry(data_block_ref(data_block), index as usize);
+                occupied_bitmap -= 1_u32 << index;
             }
         }
     }
@@ -514,31 +508,37 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     ) {
         debug_assert_eq!(TYPE, INDEX);
 
+        let mut dropped_bitmap = metadata.removed_bitmap_or_lru_tail.load(Relaxed);
+
         let current_epoch = guard.epoch();
-        let mut removed_bitmap = metadata.removed_bitmap_or_lru_tail.load(Relaxed);
-        let mut index = removed_bitmap.trailing_zeros();
-        while index != u32::BITS {
+        for i in 0..LEN {
             if current_epoch.in_same_generation(
-                Epoch::try_from(*Self::read_cell(
-                    &metadata.partial_hash_array[index as usize],
-                ))
-                .unwrap_or(current_epoch),
+                Epoch::try_from(*Self::read_cell(&metadata.partial_hash_array[i]))
+                    .unwrap_or(current_epoch),
             ) {
-                guard.accelerate();
-            } else {
-                // Store ordering: `occupied_bitmap` -> `release` -> `removed_bitmap`.
-                metadata.occupied_bitmap.store(
-                    metadata.occupied_bitmap.load(Relaxed) & !(1_u32 << index),
-                    Release,
-                );
-                metadata.removed_bitmap_or_lru_tail.store(
-                    metadata.removed_bitmap_or_lru_tail.load(Relaxed) & !(1_u32 << index),
-                    Release,
-                );
-                Bucket::<K, V, (), MAP>::drop_entry(data_block, index as usize);
+                dropped_bitmap &= !(1_u32 << i);
             }
-            removed_bitmap -= 1_u32 << index;
-            index = removed_bitmap.trailing_zeros();
+        }
+
+        // Store ordering: `occupied_bitmap` -> `release` -> `removed_bitmap`.
+        metadata.occupied_bitmap.store(
+            metadata.occupied_bitmap.load(Relaxed) & !dropped_bitmap,
+            Release,
+        );
+        metadata.removed_bitmap_or_lru_tail.store(
+            metadata.removed_bitmap_or_lru_tail.load(Relaxed) & !dropped_bitmap,
+            Release,
+        );
+        if needs_drop::<(K, V)>() {
+            while dropped_bitmap != 0 {
+                let index = dropped_bitmap.trailing_zeros();
+                Bucket::<K, V, (), MAP>::drop_entry(data_block, index as usize);
+                dropped_bitmap -= 1_u32 << index;
+            }
+        }
+
+        if metadata.removed_bitmap_or_lru_tail.load(Relaxed) != 0 {
+            guard.accelerate();
         }
     }
 
@@ -1276,11 +1276,10 @@ impl<K, V> Drop for LinkedBucket<K, V> {
     fn drop(&mut self) {
         if needs_drop::<(K, V)>() {
             let mut occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
-            let mut index = occupied_bitmap.trailing_zeros();
-            while index != u32::BITS {
+            while occupied_bitmap != 0 {
+                let index = occupied_bitmap.trailing_zeros();
                 Bucket::<K, V, (), MAP>::drop_entry(&self.data_block, index as usize);
                 occupied_bitmap -= 1_u32 << index;
-                index = occupied_bitmap.trailing_zeros();
             }
         }
     }
