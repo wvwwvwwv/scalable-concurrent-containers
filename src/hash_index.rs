@@ -949,7 +949,9 @@ where
             while entry_ptr.move_to_next(&locked_bucket.writer) {
                 let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
                 if !pred(k, v) {
-                    locked_bucket.writer.mark_removed(&mut entry_ptr);
+                    locked_bucket
+                        .writer
+                        .mark_removed(&mut entry_ptr, &Guard::new());
                     *removed = true;
                 }
             }
@@ -990,7 +992,7 @@ where
             while entry_ptr.move_to_next(&locked_bucket.writer) {
                 let (k, v) = locked_bucket.entry_mut(&mut entry_ptr);
                 if !pred(k, v) {
-                    locked_bucket.writer.mark_removed(&mut entry_ptr);
+                    locked_bucket.writer.mark_removed(&mut entry_ptr, &guard);
                     *removed = true;
                 }
             }
@@ -1708,7 +1710,11 @@ where
     pub async fn remove_and_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let hashindex = self.hashindex;
         let mut entry_ptr = self.entry_ptr.clone();
-        self.locked_bucket.writer.mark_removed(&mut entry_ptr);
+        let guard = Guard::new();
+        self.locked_bucket
+            .writer
+            .mark_removed(&mut entry_ptr, &guard);
+        self.locked_bucket.mark_has_garbage(&guard);
         if let Some(locked_bucket) = self
             .locked_bucket
             .next_async(hashindex, &mut entry_ptr)
@@ -1756,7 +1762,11 @@ where
     pub fn remove_and_sync(self) -> Option<Self> {
         let hashindex = self.hashindex;
         let mut entry_ptr = self.entry_ptr.clone();
-        self.locked_bucket.writer.mark_removed(&mut entry_ptr);
+        let guard = Guard::new();
+        self.locked_bucket
+            .writer
+            .mark_removed(&mut entry_ptr, &guard);
+        self.locked_bucket.mark_has_garbage(&guard);
         if let Some(locked_bucket) = self.locked_bucket.next_sync(hashindex, &mut entry_ptr) {
             return Some(OccupiedEntry {
                 hashindex,
@@ -1876,7 +1886,11 @@ where
         let entry_ptr = self
             .locked_bucket
             .insert(u64::from(partial_hash), (key, val));
-        self.locked_bucket.writer.mark_removed(&mut self.entry_ptr);
+        let guard = Guard::new();
+        self.locked_bucket
+            .writer
+            .mark_removed(&mut self.entry_ptr, &guard);
+        self.locked_bucket.mark_has_garbage(&guard);
         self.entry_ptr = entry_ptr;
     }
 }

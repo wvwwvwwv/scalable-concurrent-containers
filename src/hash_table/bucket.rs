@@ -148,12 +148,14 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         entry: (K, V),
     ) -> EntryPtr<K, V, TYPE> {
         let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
-        let occupied_bitmap =
-            if TYPE == INDEX && occupied_bitmap == u32::MAX && self.len() < BUCKET_LEN {
-                self.clear_unreachable_entries(data_block_ref(data_block))
-            } else {
-                occupied_bitmap
-            };
+        let occupied_bitmap = if TYPE == INDEX
+            && occupied_bitmap == u32::MAX
+            && self.metadata.removed_bitmap.load(Relaxed) != 0
+        {
+            self.clear_unreachable_entries(data_block_ref(data_block))
+        } else {
+            occupied_bitmap
+        };
         let free_index = occupied_bitmap.trailing_ones() as usize;
         if free_index == BUCKET_LEN {
             self.insert_overflow(hash, entry)
@@ -217,14 +219,13 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Marks the entry removed without dropping the entry.
     #[inline]
-    pub(crate) fn mark_removed(&self, entry_ptr: &mut EntryPtr<K, V, TYPE>) {
+    pub(crate) fn mark_removed(&self, entry_ptr: &mut EntryPtr<K, V, TYPE>, guard: &Guard) {
         debug_assert_eq!(TYPE, INDEX);
         debug_assert_ne!(entry_ptr.index, usize::MAX);
         debug_assert_ne!(entry_ptr.index, BUCKET_LEN);
 
         self.len.store(self.len.load(Relaxed) - 1, Relaxed);
 
-        let guard = Guard::new();
         if let Some(link) = link_ref(entry_ptr.link_ptr) {
             self.write_cell(&link.metadata.partial_hash_array[entry_ptr.index], |h| {
                 *h = u8::from(guard.epoch());
@@ -246,7 +247,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             removed_bitmap |= 1_u32 << entry_ptr.index;
             self.metadata.removed_bitmap.store(removed_bitmap, Release);
         }
-        guard.set_has_garbage();
     }
 
     /// Evicts the least recently used entry if the [`Bucket`] is full.

@@ -38,7 +38,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         let log2_array_len = u8::try_from(array_len.trailing_zeros()).unwrap_or(0);
         assert_eq!(1_usize << log2_array_len, array_len);
 
-        // `array_len = 2 -> 1`, `array_len = 4 -> 2`, `array_len = 8 -> 4`.
+        // `array_len = 2 -> 1`, `array_len = 4 -> 2`, `array_len = 8 -> 4`, and `array_len = 1024 -> 16`.
         let sample_size = log2_array_len.next_power_of_two();
 
         let alignment = align_of::<Bucket<K, V, L, TYPE>>();
@@ -139,7 +139,8 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) const fn sample_size(&self) -> usize {
-        // `Log2(array_len)`: if `array_len` is sufficiently large, expected error is `~3%`.
+        // `Log2(array_len)`: if `array_len` is sufficiently large, expected error of size
+        // estimation is `~3%`.
         self.sample_size as usize
     }
 

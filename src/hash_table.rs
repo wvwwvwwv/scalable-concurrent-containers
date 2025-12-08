@@ -685,6 +685,9 @@ where
         }
 
         if removed {
+            if TYPE == INDEX {
+                async_guard.guard().set_has_garbage();
+            }
             if let Some(current_array) = self.bucket_array(async_guard.guard()) {
                 self.try_shrink(current_array, 0, async_guard.guard());
             }
@@ -751,6 +754,9 @@ where
         }
 
         if removed {
+            if TYPE == INDEX {
+                guard.set_has_garbage();
+            }
             if let Some(current_array) = self.bucket_array(guard) {
                 self.try_shrink(current_array, 0, guard);
             }
@@ -1506,7 +1512,9 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         H: BuildHasher,
     {
         let removed = self.writer.remove(self.data_block, entry_ptr);
-        self.try_shrink(hash_table);
+        if self.len() == 0 {
+            self.try_shrink(hash_table, &Guard::new());
+        }
         removed
     }
 
@@ -1521,26 +1529,35 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
     {
         debug_assert_eq!(TYPE, INDEX);
 
-        self.writer.mark_removed(entry_ptr);
-        self.try_shrink(hash_table);
+        let guard = Guard::new();
+        self.writer.mark_removed(entry_ptr, &guard);
+        self.mark_has_garbage(&guard);
+        if self.writer.len() == 0 {
+            self.try_shrink(hash_table, &guard);
+        }
+    }
+
+    /// Marks that there can be garbage in the bucket.
+    #[inline]
+    pub(crate) fn mark_has_garbage(&self, guard: &Guard) {
+        if self.bucket_index % self.bucket_array().sample_size() == 0 {
+            guard.set_has_garbage();
+        }
     }
 
     /// Tries to shrink the container.
     #[inline]
-    pub(crate) fn try_shrink<H, T: HashTable<K, V, H, L, TYPE>>(self, hash_table: &T)
+    pub(crate) fn try_shrink<H, T: HashTable<K, V, H, L, TYPE>>(self, hash_table: &T, guard: &Guard)
     where
         H: BuildHasher,
     {
-        if self.writer.len() == 0 {
-            let guard = Guard::new();
-            if let Some(current_array) = hash_table.bucket_array(&guard) {
-                if ptr::eq(current_array, self.bucket_array()) {
-                    let bucket_index = self.bucket_index;
-                    drop(self);
+        if let Some(current_array) = hash_table.bucket_array(guard) {
+            if ptr::eq(current_array, self.bucket_array()) {
+                let bucket_index = self.bucket_index;
+                drop(self);
 
-                    // Tries to shrink the container after unlocking the bucket.
-                    hash_table.try_shrink(current_array, bucket_index, &guard);
-                }
+                // Tries to shrink the container after unlocking the bucket.
+                hash_table.try_shrink(current_array, bucket_index, guard);
             }
         }
     }
@@ -1563,7 +1580,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         let len = self.bucket_array().len();
 
         if self.writer.len() == 0 {
-            self.try_shrink(hash_table);
+            self.try_shrink(hash_table, &Guard::new());
         } else {
             drop(self);
         }
@@ -1605,7 +1622,7 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
         let len = self.bucket_array().len();
 
         if self.writer.len() == 0 {
-            self.try_shrink(hash_table);
+            self.try_shrink(hash_table, &Guard::new());
         } else {
             drop(self);
         }
