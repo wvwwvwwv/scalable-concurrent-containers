@@ -247,7 +247,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 .removed_bitmap_or_lru_tail
                 .store(removed_bitmap, Release);
         }
-        guard.accelerate();
+        guard.set_has_garbage();
     }
 
     /// Evicts the least recently used entry if the [`Bucket`] is full.
@@ -536,9 +536,8 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 dropped_bitmap -= 1_u32 << index;
             }
         }
-
         if metadata.removed_bitmap_or_lru_tail.load(Relaxed) != 0 {
-            guard.accelerate();
+            guard.set_has_garbage();
         }
     }
 
