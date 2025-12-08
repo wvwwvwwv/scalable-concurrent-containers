@@ -148,7 +148,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         entry: (K, V),
     ) -> EntryPtr<K, V, TYPE> {
         let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
-        if TYPE == INDEX && occupied_bitmap == u32::MAX && self.len() != BUCKET_LEN {
+        if TYPE == INDEX && occupied_bitmap == u32::MAX && self.len() < BUCKET_LEN {
             self.clear_unreachable_entries(data_block_ref(data_block));
         }
         let free_index = occupied_bitmap.trailing_ones() as usize;
@@ -512,10 +512,9 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         let current_epoch = guard.epoch();
         for i in 0..LEN {
-            if current_epoch.in_same_generation(
-                Epoch::try_from(*Self::read_cell(&metadata.partial_hash_array[i]))
-                    .unwrap_or(current_epoch),
-            ) {
+            if Epoch::try_from(*Self::read_cell(&metadata.partial_hash_array[i]))
+                .is_ok_and(|e| e.in_same_generation(current_epoch))
+            {
                 dropped_bitmap &= !(1_u32 << i);
             }
         }

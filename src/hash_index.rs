@@ -1367,7 +1367,7 @@ where
 
     #[inline]
     fn defer_reclaim(&self, bucket_array: Shared<BucketArray<K, V, (), INDEX>>, guard: &Guard) {
-        guard.set_has_garbage();
+        guard.accelerate();
         self.reclaim_memory();
         self.garbage_epoch.swap(u8::from(guard.epoch()), Release);
         let (Some(prev_head), _) = self
