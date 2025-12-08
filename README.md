@@ -149,12 +149,7 @@ let future_remove = hashset.remove_async(&1);
 
 ### Entry lifetime
 
-`HashIndex` does not drop removed entries immediately; instead, they are dropped when one of the following conditions is met.
-
-1. `HashIndex` is cleared or resized.
-2. Buckets full of removed entries occupy 50% of the capacity.
-
-Those conditions do not guarantee that the removed entry will be dropped within a definite period of time; therefore, `HashIndex` would not be an optimal choice if the workload is write-heavy and the entry size is large.
+`HashIndex` does not drop removed entries immediately, instead, they are dropped when the bucket is accessed again after [`sdd`](https://crates.io/crates/sdd) has ensured that there are no potential readers of those entries. This implies that a removed entry can remain as long as there are potential readers or the bucket is not accessed. This makes `HashIndex` not an optimal choice if the workload is write-heavy and the entry size is large.
 
 ### Examples
 
