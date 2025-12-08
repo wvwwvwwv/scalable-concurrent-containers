@@ -1183,7 +1183,7 @@ where
         }
     }
 
-    /// Deallocates the supplied bucket array.
+    /// Deallocates garbage bucket arrays if they are unreachable.
     fn dealloc_garbage(&self) {
         let guard = Guard::new();
         let head_ptr = self.garbage_chain.load(Acquire, &guard);
@@ -1714,7 +1714,7 @@ where
         self.locked_bucket
             .writer
             .mark_removed(&mut entry_ptr, &guard);
-        self.locked_bucket.mark_has_garbage(&guard);
+        self.locked_bucket.set_has_garbage(&guard);
         if let Some(locked_bucket) = self
             .locked_bucket
             .next_async(hashindex, &mut entry_ptr)
@@ -1766,7 +1766,7 @@ where
         self.locked_bucket
             .writer
             .mark_removed(&mut entry_ptr, &guard);
-        self.locked_bucket.mark_has_garbage(&guard);
+        self.locked_bucket.set_has_garbage(&guard);
         if let Some(locked_bucket) = self.locked_bucket.next_sync(hashindex, &mut entry_ptr) {
             return Some(OccupiedEntry {
                 hashindex,
@@ -1890,7 +1890,7 @@ where
         self.locked_bucket
             .writer
             .mark_removed(&mut self.entry_ptr, &guard);
-        self.locked_bucket.mark_has_garbage(&guard);
+        self.locked_bucket.set_has_garbage(&guard);
         self.entry_ptr = entry_ptr;
     }
 }

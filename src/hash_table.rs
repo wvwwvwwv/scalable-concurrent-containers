@@ -1531,16 +1531,17 @@ impl<K: Eq + Hash, V, L: LruList, const TYPE: char> LockedBucket<K, V, L, TYPE> 
 
         let guard = Guard::new();
         self.writer.mark_removed(entry_ptr, &guard);
-        self.mark_has_garbage(&guard);
+        self.set_has_garbage(&guard);
         if self.writer.len() == 0 {
             self.try_shrink(hash_table, &guard);
         }
     }
 
-    /// Marks that there can be garbage in the bucket.
+    /// Sets that there can be a garbage entry in the bucket so the epoch should be advanced.
     #[inline]
-    pub(crate) fn mark_has_garbage(&self, guard: &Guard) {
-        if self.bucket_index % self.bucket_array().sample_size() == 0 {
+    pub(crate) const fn set_has_garbage(&self, guard: &Guard) {
+        let sample_size = self.bucket_array().sample_size();
+        if self.bucket_index % (sample_size * sample_size) == 0 {
             guard.set_has_garbage();
         }
     }

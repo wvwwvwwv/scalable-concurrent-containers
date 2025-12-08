@@ -31,14 +31,14 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         linked_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
     ) -> Self {
         let adjusted_capacity = capacity
-            .min(1_usize << (usize::BITS - 1))
+            .min(1_usize << (usize::BITS - 2))
             .next_power_of_two()
             .max(Self::minimum_capacity());
         let array_len = adjusted_capacity / BUCKET_LEN;
         let log2_array_len = u8::try_from(array_len.trailing_zeros()).unwrap_or(0);
         assert_eq!(1_usize << log2_array_len, array_len);
 
-        // `array_len = 2 -> 1`, `array_len = 4 -> 2`, `array_len = 8 -> 4`, and `array_len = 1024 -> 16`.
+        // `2 -> 1`, `4 -> 2`, `8 -> 4`, `1024 -> 16`, and `2^58 -> 64`.
         let sample_size = log2_array_len.next_power_of_two();
 
         let alignment = align_of::<Bucket<K, V, L, TYPE>>();
