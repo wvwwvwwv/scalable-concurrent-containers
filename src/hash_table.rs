@@ -686,7 +686,7 @@ where
 
         if removed {
             if TYPE == INDEX {
-                async_guard.guard().set_has_garbage();
+                async_guard.guard().accelerate();
             }
             if let Some(current_array) = self.bucket_array(async_guard.guard()) {
                 self.try_shrink(current_array, 0, async_guard.guard());
@@ -755,7 +755,7 @@ where
 
         if removed {
             if TYPE == INDEX {
-                guard.set_has_garbage();
+                guard.accelerate();
             }
             if let Some(current_array) = self.bucket_array(guard) {
                 self.try_shrink(current_array, 0, guard);
