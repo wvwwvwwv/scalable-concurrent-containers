@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.4.7
+
+* Minor `Future` size improvement for `Hash*` containers.
+
 3.4.6
 
 * Improve `HashIndex` entry slot recycling strategies.

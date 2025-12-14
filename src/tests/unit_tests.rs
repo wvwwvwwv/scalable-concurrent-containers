@@ -143,13 +143,9 @@ mod hashmap {
 
     #[test]
     fn future_size() {
-        // TODO: writer_async = 480B.
-        // TODO: incremental_rehash_async/dedup_bucket_async = 416B.
-        // TODO: relocate_bucket_async
-        // TODO: lock_async = 200B.
         // Small type.
         {
-            let limit = 504; // In v2, 104.
+            let limit = 496; // In v2, 104.
             let hashmap: HashMap<(), ()> = HashMap::default();
             let get_size = size_of_val(&hashmap.get_async(&()));
             assert!(get_size <= limit + 24, "{get_size}");
@@ -168,7 +164,7 @@ mod hashmap {
         }
         // Medium type.
         {
-            let limit = 496 + 2 * size_of::<(u64, u64)>(); // In v2, 104 + 2 * size_of::<(u64, u64)>.
+            let limit = 488 + 2 * size_of::<(u64, u64)>(); // In v2, 104 + 2 * size_of::<(u64, u64)>.
             let hashmap: HashMap<u64, u64> = HashMap::default();
             let get_size = size_of_val(&hashmap.get_async(&0));
             assert!(get_size <= limit, "{get_size}");
@@ -187,7 +183,7 @@ mod hashmap {
         }
         {
             type Large = [u64; 32];
-            let limit = 496 + 2 * size_of::<(Vec<usize>, Large)>(); // In v2, 104 + 2 * size_of::<(Vec<usize>, Large)>.
+            let limit = 488 + 2 * size_of::<(Vec<usize>, Large)>(); // In v2, 104 + 2 * size_of::<(Vec<usize>, Large)>.
             let hashmap: HashMap<Vec<usize>, Large> = HashMap::default();
             let get_size = size_of_val(&hashmap.get_async(&vec![]));
             assert!(get_size <= limit, "{get_size}");

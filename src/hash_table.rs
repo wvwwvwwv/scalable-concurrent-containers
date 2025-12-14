@@ -4,7 +4,6 @@ pub mod bucket_array;
 use std::hash::{BuildHasher, Hash};
 use std::mem::forget;
 use std::ops::Deref;
-use std::pin::pin;
 use std::ptr::{self, NonNull, from_ref};
 
 #[cfg(not(feature = "loom"))]
@@ -269,7 +268,7 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
-        let async_guard = pin!(AsyncGuard::default());
+        let async_guard = AsyncGuard::default();
         while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
         {
             if current_array.has_linked_array() {
@@ -334,7 +333,7 @@ where
     /// If the container is empty, a new bucket array is allocated.
     #[inline]
     async fn writer_async(&self, hash: u64) -> LockedBucket<K, V, L, TYPE> {
-        let async_guard = pin!(AsyncGuard::default());
+        let async_guard = AsyncGuard::default();
         if let Some(locked_bucket) = self.try_optional_writer::<true>(hash, async_guard.guard()) {
             return locked_bucket;
         }
@@ -417,7 +416,7 @@ where
     /// If the container is empty, `None` is returned.
     #[inline]
     async fn optional_writer_async(&self, hash: u64) -> Option<LockedBucket<K, V, L, TYPE>> {
-        let async_guard = pin!(AsyncGuard::default());
+        let async_guard = AsyncGuard::default();
         if let Some(locked_bucket) = self.try_optional_writer::<false>(hash, async_guard.guard()) {
             return Some(locked_bucket);
         }
@@ -514,7 +513,7 @@ where
     where
         F: FnMut(Reader<K, V, L, TYPE>, NonNull<DataBlock<K, V, BUCKET_LEN>>) -> bool,
     {
-        let async_guard = pin!(AsyncGuard::default());
+        let async_guard = AsyncGuard::default();
         let mut start_index = 0;
         let mut prev_len = 0;
         while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
@@ -624,7 +623,7 @@ where
     ) where
         F: FnMut(LockedBucket<K, V, L, TYPE>, &mut bool) -> bool,
     {
-        let async_guard = pin!(AsyncGuard::default());
+        let async_guard = AsyncGuard::default();
         let mut prev_len = expected_array_len;
         let mut removed = false;
         while let Some(current_array) = async_guard.load_unchecked(self.bucket_array_var(), Acquire)
