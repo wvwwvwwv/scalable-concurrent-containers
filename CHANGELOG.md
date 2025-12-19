@@ -3,6 +3,10 @@
 
 ## Version 3
 
+3.4.8
+
+* Minor updates for `codeberg` migration.
+
 3.4.7
 
 * Minor `Future` size improvement for `Hash*` containers.

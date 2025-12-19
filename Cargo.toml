@@ -2,7 +2,7 @@
 name = "scc"
 description = "A collection of high-performance containers providing both asynchronous and synchronous interfaces"
 documentation = "https://docs.rs/scc"
-version = "3.4.7"
+version = "3.4.8"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2024"
 rust-version = "1.85.0"
