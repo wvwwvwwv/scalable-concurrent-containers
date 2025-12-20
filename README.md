@@ -321,7 +321,6 @@ The expected tail latency of a distribution of latencies of 1048576 insertion op
 
 ### [`HashMap`](#hashmap) and [`HashIndex`](#hashindex) Throughput
 
-- [Results on Apple M4 Pro (12 cores)](https://codeberg.org/wvwwvwwv/conc-map-bench).
-- [Results on Intel Xeon (48 cores, avx2)](https://codeberg.org/wvwwvwwv/conc-map-bench/src/branch/Intel).
+- [Results on Intel Xeon (48 cores, avx2)](https://codeberg.org/wvwwvwwv/conc-map-bench).
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)
