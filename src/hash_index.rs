@@ -766,7 +766,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::{Guard, HashIndex};
+    /// use scc::HashIndex;
+    ///
+    /// use sdd::Guard;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -1147,7 +1149,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::{Guard, HashIndex};
+    /// use scc::HashIndex;
+    ///
+    /// use sdd::Guard;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///

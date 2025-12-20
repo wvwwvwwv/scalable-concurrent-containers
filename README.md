@@ -191,7 +191,9 @@ if let Some(mut o) = hashindex.get_sync(&1) {
 An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#hashindex).
 
 ```rust
-use scc::{Guard, HashIndex};
+use scc::HashIndex;
+
+use sdd::Guard;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
@@ -250,7 +252,7 @@ Read access is always lock-free and non-blocking. Write access to an entry is lo
 
 ### Examples
 
-If the key is unique, an entry can be inserted, read, and removed afterward. Locks are acquired or awaited only when internal nodes are split or merged.
+Locks are acquired or awaited when internal nodes are split or merged, however blocking operations do not affect read operations.
 
 ```rust
 use scc::TreeIndex;
@@ -271,6 +273,7 @@ Entries can be scanned without acquiring any locks.
 
 ```rust
 use scc::TreeIndex;
+
 use sdd::Guard;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
@@ -292,7 +295,9 @@ assert!(iter.next().is_none());
 A specific range of keys can be scanned.
 
 ```rust
-use scc::{Guard, TreeIndex};
+use scc::TreeIndex;
+
+use sdd::Guard;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
 

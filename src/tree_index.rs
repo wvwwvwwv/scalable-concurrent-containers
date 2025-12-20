@@ -601,7 +601,9 @@ where
     /// ```
     /// use std::sync::Arc;
     ///
-    /// use scc::{Guard, TreeIndex};
+    /// use scc::TreeIndex;
+    ///
+    /// use sdd::Guard;
     ///
     /// let treeindex: TreeIndex<Arc<str>, u32> = TreeIndex::new();
     ///
@@ -660,7 +662,9 @@ where
     /// ```
     /// use std::sync::Arc;
     ///
-    /// use scc::{Guard, TreeIndex};
+    /// use scc::TreeIndex;
+    ///
+    /// use sdd::Guard;
     ///
     /// let treeindex: TreeIndex<Arc<str>, u32> = TreeIndex::new();
     ///
@@ -751,7 +755,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::{Guard, TreeIndex};
+    /// use scc::TreeIndex;
+    ///
+    /// use sdd::Guard;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -773,7 +779,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::{Guard, TreeIndex};
+    /// use scc::TreeIndex;
+    ///
+    /// use sdd::Guard;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
