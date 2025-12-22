@@ -36,7 +36,7 @@ Resizing of a [`HashMap`](#hashmap) is entirely non-blocking and lock-free; resi
 
 ### Examples
 
-If the key is unique, an entry can be inserted. The inserted entry can be updated, read, and removed synchronously or asynchronously.
+Inserted entries can be updated, read, and removed synchronously or asynchronously.
 
 ```rust
 use scc::HashMap;

@@ -1323,6 +1323,29 @@ where
             return;
         }
 
+        if self
+            .minimum_capacity_var()
+            .fetch_update(AcqRel, Acquire, |lock_state| {
+                if lock_state >= RESIZING {
+                    None
+                } else {
+                    Some(lock_state + RESIZING)
+                }
+            })
+            .is_err()
+        {
+            // The bucket array is being replaced with a new one.
+            return;
+        }
+        let _lock_guard = ExitGuard::new((), |()| {
+            self.minimum_capacity_var().fetch_sub(RESIZING, Release);
+        });
+
+        if self.bucket_array_var().load(Acquire, guard) != current_array_ptr {
+            // Resized in the meantime.
+            return;
+        }
+
         let minimum_capacity = self.minimum_capacity();
         let capacity = current_array.num_slots();
         let estimated_num_entries = Self::sample(current_array, sampling_index);
@@ -1359,28 +1382,6 @@ where
         let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
         if !try_resize && !try_drop_table {
             // Nothing to do.
-            return;
-        }
-
-        if self
-            .minimum_capacity_var()
-            .fetch_update(AcqRel, Acquire, |lock_state| {
-                if lock_state >= RESIZING {
-                    None
-                } else {
-                    Some(lock_state + RESIZING)
-                }
-            })
-            .is_err()
-        {
-            // The bucket array is being replaced with a new one.
-            return;
-        }
-        let _lock_guard = ExitGuard::new((), |()| {
-            self.minimum_capacity_var().fetch_sub(RESIZING, Release);
-        });
-
-        if self.bucket_array_var().load(Acquire, guard) != current_array_ptr {
             return;
         }
 
