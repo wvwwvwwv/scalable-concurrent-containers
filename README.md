@@ -1,3 +1,7 @@
+# Moved to [`codeberg`](https://codeberg.org/wvwwvwwv/scalable-concurrent-containers)
+
+This repository has been moved to [codeberg](https://codeberg.org/wvwwvwwv/scalable-concurrent-containers), and will no longer be maintained here.
+
 # Scalable Concurrent Containers
 
 [![Cargo](https://img.shields.io/crates/v/scc)](https://crates.io/crates/scc)
